@@ -18,12 +18,16 @@ import (
 const protocolID = "/fcvpn/1.0.0"
 
 func main() {
-	// 1. Avataan Windowsin TAP-kortti
+	// 1. Avataan Windowsin TAP-kortti oikeilla Windows-asetuksilla
 	config := water.Config{DeviceType: water.TAP}
-	config.Name = "FC-TAP"
+	config.PlatformSpecificParams = water.PlatformSpecificParams{
+		ComponentID:   "tap0901", // OpenVPN:n TAP-ajurin standarditunnus
+		InterfaceName: "FC-TAP",
+	}
+
 	tapDevice, err := water.New(config)
 	if err != nil {
-		log.Fatal("TAP-kortin avaaminen epäonnistui: ", err)
+		log.Fatal("TAP-kortin avaaminen epäonnistui (muistitko ajaa Adminina ja onko FC-TAP luotu?): ", err)
 	}
 	defer tapDevice.Close()
 
@@ -31,12 +35,12 @@ func main() {
 
 	// 2. Alustetaan Libp2p-host automaattisella NAT-läpäisyllä
 	h, err := libp2p.New(
-		libp2p.NATPortMap(),      // Yrittää avata UPnP-portit automaattisesti
-		libp2p.EnableNATService(),// Aktivoi NAT-läpäisyominaisuudet
-		libp2p.EnableRelay(),     // Jos suora Hole Punching epäonnistuu, käyttää varapalvelinta (kuten DERP/TURN)
+		libp2p.NATPortMap(),       // Yrittää avata UPnP-portit automaattisesti
+		libp2p.EnableNATService(), // Aktivoi NAT-läpäisyominaisuudet
+		libp2p.EnableRelay(),      // Vararele, jos suora hole punching epäonnistuu
 	)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Libp2p alustus epäonnistui: ", err)
 	}
 	defer h.Close()
 
@@ -45,7 +49,7 @@ func main() {
 
 	// 3. Määritetään mitä tehdään, kun kaveri ottaa yhteyden meihin
 	h.SetStreamHandler(protocolID, func(stream network.Stream) {
-		fmt.Println("Kaveri yhdisti! Tunneli valmis.")
+		fmt.Println("\n[TUNNELI] Kaveri yhdisti! Far Cry co-op pitäisi nyt toimia.")
 		startBridging(tapDevice, stream)
 	})
 
@@ -71,7 +75,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println("Yhteys muodostettu! Tunneli valmis.")
+		fmt.Println("\n[TUNNELI] Yhteys muodostettu kaveriin! Tunneli valmis.")
 		startBridging(tapDevice, stream)
 	}
 
@@ -80,25 +84,25 @@ func main() {
 }
 
 func startBridging(tap *water.Interface, stream network.Stream) {
-	// Lanka A: TAP -> P2P Netti
+	// Lanka A: Luetaan Far Cryn paketit TAP-kortilta ja ammutaan P2P-tunneliin
 	go func() {
 		buf := make([]byte, 2000)
 		for {
 			n, err := tap.Read(buf)
 			if err == nil {
-				stream.Write(buf[:n])
+				_, _ = stream.Write(buf[:n])
 			}
 		}
 	}()
 
-	// Lanka B: P2P Netti -> TAP
+	// Lanka B: Otetaan vastaan kaverin pelipaketit tunnelista ja syötetään Windowsille
 	bufIn := make([]byte, 2000)
 	for {
 		n, err := stream.Read(bufIn)
 		if err == nil {
-			tap.Write(bufIn[:n])
+			_, _ = tap.Write(bufIn[:n])
 		} else if err == io.EOF {
-			fmt.Println("Yhteys katkesi.")
+			fmt.Println("\n[TUNNELI] Yhteys katkesi.")
 			return
 		}
 	}
