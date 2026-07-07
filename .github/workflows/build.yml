@@ -1,0 +1,44 @@
+name: Build Windows EXE
+
+# Työnkulku käynnistyy aina, kun pushaat koodia main-haaraan
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  # Tämän avulla voit myös käynnistää käännöksen käsin GitHubin sivuilta
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest # Ajetaan Windows-virtuaalikoneella
+
+    steps:
+    # 1. Haetaan koodi arkistosta virtuaalikoneelle
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # 2. Asennetaan oikea Go-versio
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22' # Voit muuttaa tämän tarvittaessa uusimpaan
+
+    # 3. Ladataan koodin tarvitsemat kirjastot (dependencies)
+    - name: Install dependencies
+      run: go mod download
+
+    # 4. Käännetään koodi Windows-yhteensopivaksi .exe-tiedostoksi
+    - name: Build EXE
+      run: |
+        $env:GOOS="windows"
+        $env:GOARCH="amd64"
+        go build -o fcvpn.exe main.go
+
+    # 5. Julkaistaan valmis .exe GitHubiin ladattavaksi (Artifact)
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: fcvpn-windows-binary
+        path: fcvpn.exe
+        
