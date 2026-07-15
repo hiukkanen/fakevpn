@@ -7,15 +7,12 @@ import (
 	"log"
 	"os"
 
-	"github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/multiformats/go-multiaddr"
 	"github.com/songgao/water"
+	"github.com/tmc/go-iroh/iroh"
+	"github.com/tmc/go-iroh/key"
 )
 
-const protocolID = "/fcvpn/1.0.0"
+const protocolID = "fcvpn/1"
 
 func main() {
 	// 1. Avataan Windowsin TAP-kortti oikeilla Windows-asetuksilla
@@ -33,48 +30,65 @@ func main() {
 
 	ctx := context.Background()
 
-	// 2. Alustetaan Libp2p-host automaattisella NAT-läpäisyllä
-	h, err := libp2p.New(
-		libp2p.NATPortMap(),       // Yrittää avata UPnP-portit automaattisesti
-		libp2p.EnableNATService(), // Aktivoi NAT-läpäisyominaisuudet
-		libp2p.EnableRelay(),      // Vararele, jos suora hole punching epäonnistuu
-	)
+	// 2. Alustetaan Iroh-päätepiste (Endpoint)
+	ep, err := iroh.Bind(ctx, iroh.WithALPNs(protocolID))
 	if err != nil {
-		log.Fatal("Libp2p alustus epäonnistui: ", err)
+		log.Fatal("Iroh alustus epäonnistui: ", err)
 	}
-	defer h.Close()
+	defer ep.Shutdown(ctx)
 
-	// Tulostetaan osoite, jonka voit kopioida kaverille
-	printAddresses(h)
+	// Haetaan ja näytetään Node ID (oma Iroh-osoite)
+	nodeID := ep.NodeID()
+	fmt.Println("--------------------------------------------------")
+	fmt.Println("Kopioi tämä Iroh Node ID kaverillesi:")
+	fmt.Printf("%s\n", nodeID.String())
+	fmt.Println("--------------------------------------------------")
 
-	// 3. Määritetään mitä tehdään, kun kaveri ottaa yhteyden meihin
-	h.SetStreamHandler(protocolID, func(stream network.Stream) {
-		fmt.Println("\n[TUNNELI] Kaveri yhdisti! Far Cry co-op pitäisi nyt toimia.")
-		startBridging(tapDevice, stream)
+	// 3. Luodaan reititin, joka kuuntelee tulevia yhteyksiä
+	router, err := iroh.NewRouter(ep)
+	if err != nil {
+		log.Fatal("Reitittimen luonti epäonnistui: ", err)
+	}
+	
+	router.RegisterALPN(protocolID, func(ctx context.Context, conn iroh.Conn) {
+		stream, err := conn.AcceptBidirectionalStream(ctx)
+		if err == nil {
+			fmt.Println("\n[TUNNELI] Kaveri yhdisti! Far Cry pitäisi nyt toimia.")
+			startBridging(tapDevice, stream)
+		}
 	})
 
-	// 4. Jos annoit kaverin osoitteen argumenttina, yhdistetään siihen
+	go func() {
+		if err := router.Serve(ctx); err != nil {
+			log.Println("Reitittimen virhe:", err)
+		}
+	}()
+
+	// 4. Jos annoit kaverin Node ID:n argumenttina, yhdistetään siihen
 	if len(os.Args) > 1 {
-		kaverinOsoite := os.Args[1]
-		maddr, err := multiaddr.NewMultiaddr(kaverinOsoite)
+		kaverinNodeIDStr := os.Args[1]
+		kaverinNodeID, err := key.NodeIDFromString(kaverinNodeIDStr)
 		if err != nil {
-			log.Fatal("Virheellinen osoite: ", err)
+			log.Fatal("Virheellinen kaverin Node ID: ", err)
 		}
 
-		peerinfo, err := peer.AddrInfoFromP2pAddr(maddr)
-		if err != nil {
-			log.Fatal(err)
+		fmt.Println("Yhdistetään kaveriin Iroh-verkon kautta...")
+		
+		// Luodaan tyhjä NodeAddr, jotta Iroh etsii osoitteen suoraan Node ID:n perusteella
+		nodeAddr := iroh.NodeAddr{
+			NodeID: kaverinNodeID,
 		}
 
-		fmt.Println("Yhdistetään kaveriin...")
-		if err := h.Connect(ctx, *peerinfo); err != nil {
+		conn, err := ep.Connect(ctx, nodeAddr, protocolID)
+		if err != nil {
 			log.Fatal("Yhteys epäonnistui: ", err)
 		}
 
-		stream, err := h.NewStream(ctx, peerinfo.ID, protocolID)
+		stream, err := conn.OpenBidirectionalStream(ctx)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("Kanavan avaaminen epäonnistui: ", err)
 		}
+
 		fmt.Println("\n[TUNNELI] Yhteys muodostettu kaveriin! Tunneli valmis.")
 		startBridging(tapDevice, stream)
 	}
@@ -83,8 +97,9 @@ func main() {
 	select {}
 }
 
-func startBridging(tap *water.Interface, stream network.Stream) {
-	// Lanka A: Luetaan Far Cryn paketit TAP-kortilta ja ammutaan P2P-tunneliin
+// startBridging siirtää paketit TAP-laitteen ja Iroh-streamin välillä
+func startBridging(tap *water.Interface, stream iroh.Stream) {
+	// Lanka A: Luetaan pelipaketit TAP-kortilta ja lähetetään kaverille
 	go func() {
 		buf := make([]byte, 2000)
 		for {
@@ -95,7 +110,7 @@ func startBridging(tap *water.Interface, stream network.Stream) {
 		}
 	}()
 
-	// Lanka B: Otetaan vastaan kaverin pelipaketit tunnelista ja syötetään Windowsille
+	// Lanka B: Otetaan vastaan kaverin pelipaketit ja syötetään ne Windowsille
 	bufIn := make([]byte, 2000)
 	for {
 		n, err := stream.Read(bufIn)
@@ -106,13 +121,4 @@ func startBridging(tap *water.Interface, stream network.Stream) {
 			return
 		}
 	}
-}
-
-func printAddresses(h host.Host) {
-	fmt.Println("--------------------------------------------------")
-	fmt.Println("Kopioi jokin näistä osoitteista kaverillesi:")
-	for _, addr := range h.Addrs() {
-		fmt.Printf("%s/p2p/%s\n", addr, h.ID())
-	}
-	fmt.Println("--------------------------------------------------")
 }
