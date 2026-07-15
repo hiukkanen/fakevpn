@@ -7,18 +7,17 @@ import (
 	"log"
 	"os"
 
+	"git.coopcloud.tech/decentral1se/iroh-go"
 	"github.com/songgao/water"
-	"github.com/tmc/go-iroh/iroh"
-	"github.com/tmc/go-iroh/key"
 )
 
 const protocolID = "fcvpn/1"
 
 func main() {
-	// 1. Avataan Windowsin TAP-kortti oikeilla Windows-asetuksilla
+	// 1. Avataan Windowsin TAP-kortti
 	config := water.Config{DeviceType: water.TAP}
 	config.PlatformSpecificParams = water.PlatformSpecificParams{
-		ComponentID:   "tap0901", // OpenVPN:n TAP-ajurin standarditunnus
+		ComponentID:   "tap0901",
 		InterfaceName: "FC-TAP",
 	}
 
@@ -30,61 +29,62 @@ func main() {
 
 	ctx := context.Background()
 
-	// 2. Alustetaan Iroh-päätepiste (Endpoint)
-	ep, err := iroh.Bind(ctx, iroh.WithALPNs(protocolID))
+	// 2. Alustetaan virallinen Iroh-solmu (Node) muistissa pyörivällä tietokannalla
+	node, err := iroh.NewNode(ctx, iroh.DefaultNodeConfig())
 	if err != nil {
-		log.Fatal("Iroh alustus epäonnistui: ", err)
+		log.Fatal("Iroh-solmun alustus epäonnistui: ", err)
 	}
-	defer ep.Shutdown(ctx)
+	defer node.Shutdown(ctx)
 
-	// Haetaan ja näytetään Node ID (oma Iroh-osoite)
-	nodeID := ep.NodeID()
+	// Haetaan oma Node ID (Irohin yksilöllinen tunniste)
+	nodeID, err := node.ID(ctx)
+	if err != nil {
+		log.Fatal("Node ID:n haku epäonnistui: ", err)
+	}
+
 	fmt.Println("--------------------------------------------------")
 	fmt.Println("Kopioi tämä Iroh Node ID kaverillesi:")
 	fmt.Printf("%s\n", nodeID.String())
 	fmt.Println("--------------------------------------------------")
 
-	// 3. Luodaan reititin, joka kuuntelee tulevia yhteyksiä
-	router, err := iroh.NewRouter(ep)
-	if err != nil {
-		log.Fatal("Reitittimen luonti epäonnistui: ", err)
-	}
-	
-	router.RegisterALPN(protocolID, func(ctx context.Context, conn iroh.Conn) {
-		stream, err := conn.AcceptBidirectionalStream(ctx)
-		if err == nil {
-			fmt.Println("\n[TUNNELI] Kaveri yhdisti! Far Cry pitäisi nyt toimia.")
-			startBridging(tapDevice, stream)
-		}
-	})
-
+	// 3. Otetaan vastaan tulevat ALPN-yhteydet
 	go func() {
-		if err := router.Serve(ctx); err != nil {
-			log.Println("Reitittimen virhe:", err)
+		for {
+			// Hyväksytään uusi yhteys Iroh-verkosta
+			conn, err := node.Accept(ctx)
+			if err != nil {
+				continue
+			}
+
+			// Tarkistetaan täsmääkö protokolla
+			if conn.ALPN() == protocolID {
+				stream, err := conn.AcceptStream(ctx)
+				if err == nil {
+					fmt.Println("\n[TUNNELI] Kaveri yhdisti! Far Cry pitäisi nyt toimia.")
+					startBridging(tapDevice, stream)
+				}
+			}
 		}
 	}()
 
 	// 4. Jos annoit kaverin Node ID:n argumenttina, yhdistetään siihen
 	if len(os.Args) > 1 {
 		kaverinNodeIDStr := os.Args[1]
-		kaverinNodeID, err := key.NodeIDFromString(kaverinNodeIDStr)
+		kaverinNodeID, err := iroh.NodeIDFromString(kaverinNodeIDStr)
 		if err != nil {
 			log.Fatal("Virheellinen kaverin Node ID: ", err)
 		}
 
 		fmt.Println("Yhdistetään kaveriin Iroh-verkon kautta...")
-		
-		// Luodaan tyhjä NodeAddr, jotta Iroh etsii osoitteen suoraan Node ID:n perusteella
-		nodeAddr := iroh.NodeAddr{
-			NodeID: kaverinNodeID,
-		}
 
-		conn, err := ep.Connect(ctx, nodeAddr, protocolID)
+		// Yhdistetään suoraan kaverin Node ID:hen. 
+		// Iroh osaa etsiä oikean reitin ja käyttää DERP-relepalvelimia tarvittaessa!
+		conn, err := node.Connect(ctx, kaverinNodeID, protocolID)
 		if err != nil {
 			log.Fatal("Yhteys epäonnistui: ", err)
 		}
 
-		stream, err := conn.OpenBidirectionalStream(ctx)
+		stream, err := conn.OpenStream(ctx)
 		if err != nil {
 			log.Fatal("Kanavan avaaminen epäonnistui: ", err)
 		}
