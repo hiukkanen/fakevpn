@@ -7,7 +7,8 @@ import (
 	"log"
 	"os"
 
-	"git.coopcloud.tech/decentral1se/iroh-go"
+	// Tuodaan kirjasto aliaksella 'iroh', jotta koodin iroh.X -kutsut toimivat suoraan!
+	iroh "git.coopcloud.tech/decentral1se/iroh-go"
 	"github.com/songgao/water"
 )
 
@@ -29,7 +30,7 @@ func main() {
 
 	ctx := context.Background()
 
-	// 2. Alustetaan virallinen Iroh-solmu (Node) muistissa pyörivällä tietokannalla
+	// 2. Alustetaan Iroh-solmu (Node)
 	node, err := iroh.NewNode(ctx, iroh.DefaultNodeConfig())
 	if err != nil {
 		log.Fatal("Iroh-solmun alustus epäonnistui: ", err)
@@ -77,8 +78,7 @@ func main() {
 
 		fmt.Println("Yhdistetään kaveriin Iroh-verkon kautta...")
 
-		// Yhdistetään suoraan kaverin Node ID:hen. 
-		// Iroh osaa etsiä oikean reitin ja käyttää DERP-relepalvelimia tarvittaessa!
+		// Yhdistetään suoraan kaverin Node ID:hen.
 		conn, err := node.Connect(ctx, kaverinNodeID, protocolID)
 		if err != nil {
 			log.Fatal("Yhteys epäonnistui: ", err)
@@ -97,8 +97,9 @@ func main() {
 	select {}
 }
 
-// startBridging siirtää paketit TAP-laitteen ja Iroh-streamin välillä
-func startBridging(tap *water.Interface, stream iroh.Stream) {
+// startBridging siirtää paketit TAP-laitteen ja Iroh-streamin välillä.
+// Huom: käytetään io.ReadWriter-rajapintaa, johon iroh_ffi:n streamit istuvat suoraan.
+func startBridging(tap *water.Interface, stream io.ReadWriter) {
 	// Lanka A: Luetaan pelipaketit TAP-kortilta ja lähetetään kaverille
 	go func() {
 		buf := make([]byte, 2000)
