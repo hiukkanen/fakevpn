@@ -5,20 +5,26 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
+	"strings"
+	"time"
 
-	// Tuodaan kirjasto aliaksella 'iroh', jotta koodin iroh.X -kutsut toimivat suoraan!
-	iroh "git.coopcloud.tech/decentral1se/iroh-go"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/multiformats/go-multiaddr"
 	"github.com/songgao/water"
 )
 
-const protocolID = "fcvpn/1"
+const protocolID = "/fcvpn/1.0.0"
 
 func main() {
 	// 1. Avataan Windowsin TAP-kortti
 	config := water.Config{DeviceType: water.TAP}
 	config.PlatformSpecificParams = water.PlatformSpecificParams{
-		ComponentID:   "tap0901",
+		ComponentID:   "tap0901", // OpenVPN TAP-ajuri
 		InterfaceName: "FC-TAP",
 	}
 
@@ -30,65 +36,58 @@ func main() {
 
 	ctx := context.Background()
 
-	// 2. Alustetaan Iroh-solmu (Node)
-	node, err := iroh.NewNode(ctx, iroh.DefaultNodeConfig())
+	// 2. Käynnistetään Libp2p-päätepiste automaattisella NAT-läpäisyllä ja relepalvelimilla
+	h, err := libp2p.New(
+		libp2p.NATPortMap(),      // Yrittää UPnP-porttiosoitusta
+		libp2p.EnableAutoRelay(), // Ottaa käyttöön automaattisen välityspalvelimen (Relay) haun jos NAT on tiukka
+		libp2p.EnableRelayService(),
+	)
 	if err != nil {
-		log.Fatal("Iroh-solmun alustus epäonnistui: ", err)
+		log.Fatal("Verkkoalustus epäonnistui: ", err)
 	}
-	defer node.Shutdown(ctx)
+	defer h.Close()
 
-	// Haetaan oma Node ID (Irohin yksilöllinen tunniste)
-	nodeID, err := node.ID(ctx)
-	if err != nil {
-		log.Fatal("Node ID:n haku epäonnistui: ", err)
-	}
+	// Tulostetaan osoitteet ja haetaan julkinen IP taustalla
+	go printAddresses(h)
 
-	fmt.Println("--------------------------------------------------")
-	fmt.Println("Kopioi tämä Iroh Node ID kaverillesi:")
-	fmt.Printf("%s\n", nodeID.String())
-	fmt.Println("--------------------------------------------------")
+	// 3. Kuunnellaan tulevia yhteyksiä kaverilta
+	h.SetStreamHandler(protocolID, func(stream network.Stream) {
+		fmt.Println("\n[TUNNELI] Kaveri yhdisti! Tunneli valmis pelattavaksi.")
+		startBridging(tapDevice, stream)
+	})
 
-	// 3. Otetaan vastaan tulevat ALPN-yhteydet
-	go func() {
-		for {
-			// Hyväksytään uusi yhteys Iroh-verkosta
-			conn, err := node.Accept(ctx)
-			if err != nil {
-				continue
-			}
-
-			// Tarkistetaan täsmääkö protokolla
-			if conn.ALPN() == protocolID {
-				stream, err := conn.AcceptStream(ctx)
-				if err == nil {
-					fmt.Println("\n[TUNNELI] Kaveri yhdisti! Far Cry pitäisi nyt toimia.")
-					startBridging(tapDevice, stream)
-				}
-			}
-		}
-	}()
-
-	// 4. Jos annoit kaverin Node ID:n argumenttina, yhdistetään siihen
+	// 4. Jos komentorivillä annettiin kaverin osoite, yhdistetään siihen
 	if len(os.Args) > 1 {
-		kaverinNodeIDStr := os.Args[1]
-		kaverinNodeID, err := iroh.NodeIDFromString(kaverinNodeIDStr)
+		kaverinOsoite := os.Args[1]
+		maddr, err := multiaddr.NewMultiaddr(kaverinOsoite)
 		if err != nil {
-			log.Fatal("Virheellinen kaverin Node ID: ", err)
+			log.Fatal("Virheellinen osoiteformaatti: ", err)
 		}
 
-		fmt.Println("Yhdistetään kaveriin Iroh-verkon kautta...")
-
-		// Yhdistetään suoraan kaverin Node ID:hen.
-		conn, err := node.Connect(ctx, kaverinNodeID, protocolID)
+		peerinfo, err := peer.AddrInfoFromP2pAddr(maddr)
 		if err != nil {
-			log.Fatal("Yhteys epäonnistui: ", err)
+			log.Fatal(err)
 		}
 
-		stream, err := conn.OpenStream(ctx)
+		fmt.Println("Yhdistetään kaveriin (tämä voi kestää hetken)...")
+		
+		// Yritetään yhdistää useamman kerran taustalla
+		var connErr error
+		for i := 0; i < 3; i++ {
+			if connErr = h.Connect(ctx, *peerinfo); connErr == nil {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		if connErr != nil {
+			log.Fatal("Yhteys epäonnistui: ", connErr)
+		}
+
+		stream, err := h.NewStream(ctx, peerinfo.ID, protocolID)
 		if err != nil {
 			log.Fatal("Kanavan avaaminen epäonnistui: ", err)
 		}
-
+		
 		fmt.Println("\n[TUNNELI] Yhteys muodostettu kaveriin! Tunneli valmis.")
 		startBridging(tapDevice, stream)
 	}
@@ -97,10 +96,8 @@ func main() {
 	select {}
 }
 
-// startBridging siirtää paketit TAP-laitteen ja Iroh-streamin välillä.
-// Huom: käytetään io.ReadWriter-rajapintaa, johon iroh_ffi:n streamit istuvat suoraan.
-func startBridging(tap *water.Interface, stream io.ReadWriter) {
-	// Lanka A: Luetaan pelipaketit TAP-kortilta ja lähetetään kaverille
+// startBridging siirtää verkkoliikenteen livenä TAP-kortin ja tunnelin välillä
+func startBridging(tap *water.Interface, stream network.Stream) {
 	go func() {
 		buf := make([]byte, 2000)
 		for {
@@ -111,7 +108,6 @@ func startBridging(tap *water.Interface, stream io.ReadWriter) {
 		}
 	}()
 
-	// Lanka B: Otetaan vastaan kaverin pelipaketit ja syötetään ne Windowsille
 	bufIn := make([]byte, 2000)
 	for {
 		n, err := stream.Read(bufIn)
@@ -122,4 +118,42 @@ func startBridging(tap *water.Interface, stream io.ReadWriter) {
 			return
 		}
 	}
+}
+
+func getPublicIP() string {
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://ident.me")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	ipBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(ipBytes))
+}
+
+func printAddresses(h host.Host) {
+	// Odotetaan hetki, että reititin ja julkiset yhteydet alustetaan
+	time.Sleep(2 * time.Second)
+
+	fmt.Println("--------------------------------------------------")
+	fmt.Println("Kopioi jokin näistä osoitteista kaverillesi:")
+
+	// 1. Tulostetaan paikalliset osoitteet (ilman APIPA 169.x osoitteita)
+	for _, addr := range h.Addrs() {
+		if !strings.Contains(addr.String(), "169.254") && !strings.Contains(addr.String(), "127.0.0.1") {
+			fmt.Printf("%s/p2p/%s\n", addr, h.ID())
+		}
+	}
+
+	// 2. Tulostetaan valmis julkinen osoite
+	publicIP := getPublicIP()
+	if publicIP != "" {
+		fmt.Printf("\n>>> SUOSITELTU JULKINEN OSOITE (Lähetä tämä kaverille!):\n")
+		fmt.Printf("/ip4/%s/udp/4001/quic-v1/p2p/%s\n", publicIP, h.ID())
+		fmt.Printf("/ip4/%s/tcp/4001/p2p/%s\n", publicIP, h.ID())
+	}
+	fmt.Println("--------------------------------------------------")
 }
