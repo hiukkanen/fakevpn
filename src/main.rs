@@ -21,7 +21,8 @@ async fn main() -> Result<()> {
         .await?;
 
     let router = Router::builder(endpoint)
-        .accept(b"fakevpn/v1", VpnHandler { config: config.clone() })
+        // Tallennetaan vain nimi "FC-TAP"
+        .accept(b"fakevpn/v1", VpnHandler { device_name: "FC-TAP".to_string() })
         .spawn();
 
     println!("Oma Node ID: {}", secret_key.public());
