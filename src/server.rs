@@ -18,11 +18,13 @@ impl ProtocolHandler for VpnHandler {
 
         // 2. Luodaan 'config' ja 'dev' vasta AWAIT-kutsun JÄLKEEN
         // Nyt config ei elä await-kutsun yli, joten se ei haittaa säieturvallisuutta
-        let mut config = Configuration::default();
-        config.name(&self.device_name);
+        let dev = {
+            let mut config = Configuration::default();
+            config.name(&self.device_name);
 
-        let dev = tun::create_as_async(&config)
-            .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+            tun::create_as_async(&config)
+        }
+        .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
         
         println!("Uusi VPN-yhteys hyväksytty!");
         
