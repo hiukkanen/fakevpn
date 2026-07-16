@@ -13,11 +13,23 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+
+      # Lisätään Rust-työkaluketju
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # Lisätään välimuisti
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          # Tämä varmistaa, että välimuisti on juuri tälle koodille
+          key: ${{ matrix.os }}
+
       - name: Build
         run: cargo build --release
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fakevpn-${{ matrix.os }}
           path: target/release/fakevpn*
-          
