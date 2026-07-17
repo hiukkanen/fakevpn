@@ -12,15 +12,16 @@ pub struct VpnHandler {
 
 impl ProtocolHandler for VpnHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        // 1. Tehdään vaaralliset await-kutsut ensin, jolloin 'config' ei ole vielä olemassakaan
+        // 1. Tehdään asynkroninen odotus yhteydelle ensin
         let (send, recv) = connection.accept_bi().await
             .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
 
-        // 2. Luodaan 'config' ja 'dev' vasta AWAIT-kutsun JÄLKEEN
-        // Nyt config ei elä await-kutsun yli, joten se ei haittaa säieturvallisuutta
+        // 2. Avataan olemassa oleva TAP-kortti vasta odotuksen jälkeen
         let dev = {
             let mut config = Configuration::default();
             config.name(&self.device_name);
+            // Määritetään Layer 2 (TAP), jotta palvelinkin osaa tarttua oikeaan korttiin
+            config.layer(tun::Layer::L2);
 
             tun::create_as_async(&config)
         }
@@ -28,7 +29,7 @@ impl ProtocolHandler for VpnHandler {
         
         println!("Uusi VPN-yhteys hyväksytty!");
         
-        // 3. Nyt voidaan aloittaa siltaus
+        // 3. Aloitetaan siltaus
         if let Err(e) = vpn::bridge(dev, send, recv).await {
             eprintln!("Yhteysvirhe: {:?}", e);
         }
