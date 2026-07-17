@@ -1,13 +1,12 @@
 mod vpn;
 mod server;
+mod windows_tap;
 
 use anyhow::{Result, Context};
 use iroh::{Endpoint, PublicKey};
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use std::env;
-use std::sync::Arc;
-use tokio_tun::Tun;
 use crate::server::VpnHandler;
 
 #[tokio::main]
@@ -30,17 +29,10 @@ async fn main() -> Result<()> {
     if let Some(target_id_str) = args.get(1) {
         let target_id: PublicKey = target_id_str.parse().context("Virheellinen Node ID")?;
         
-        // Avataan olemassa oleva TAP-laite
-        let dev = Tun::builder()
-            .name(device_name)
-            .tap() // Määritetään L2 TAP-tilaan
-            .packet_info() // Tarvitaan Windowsilla/Linuxilla yhteensopivuuteen
-            .build()
-            .context("TAP-laitteen FC-TAP avaaminen epäonnistui!")?
-            .pop()
-            .context("Laitteen haku epäonnistui")?;
-
-        let dev = Arc::new(dev);
+        // Avataan Windows TAP-kortti suoraan nimen perusteella asynkronisesti
+        println!("Avataan olemassa oleva Windows TAP-laite: {}...", device_name);
+        let dev = windows_tap::open_tap_device(device_name)
+            .context("TAP-laitteen avaaminen epäonnistui. Aja ohjelma Administrator-oikeuksilla ja varmista, että FC-TAP on luotu.")?;
 
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await?;
         let (send, recv) = conn.open_bi().await?;

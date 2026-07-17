@@ -2,9 +2,8 @@ use anyhow::Result;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::endpoint::Connection;
 use crate::vpn;
+use crate::windows_tap;
 use std::io;
-use std::sync::Arc;
-use tokio_tun::Tun;
 
 #[derive(Debug, Clone)]
 pub struct VpnHandler {
@@ -17,16 +16,9 @@ impl ProtocolHandler for VpnHandler {
             .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
 
         // Avataan olemassa oleva TAP-laite palvelimella
-        let dev = Tun::builder()
-            .name(&self.device_name)
-            .tap()
-            .packet_info()
-            .build()
-            .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, format!("TAP avaaminen epäonnistui: {}", e))))?
-            .pop()
-            .ok_or_else(|| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, "Ei saatu laiteosoitinta")))?;
+        let dev = windows_tap::open_tap_device(&self.device_name)
+            .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, format!("TAP avaaminen epäonnistui: {}", e))))?;
         
-        let dev = Arc::new(dev);
         println!("Uusi VPN-yhteys hyväksytty!");
         
         if let Err(e) = vpn::bridge(dev, send, recv).await {
