@@ -1,9 +1,10 @@
 use anyhow::Result;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::endpoint::Connection;
-use tun::Configuration;
 use crate::vpn;
 use std::io;
+use std::sync::Arc;
+use tokio_tun::Tun;
 
 #[derive(Debug, Clone)]
 pub struct VpnHandler {
@@ -12,24 +13,22 @@ pub struct VpnHandler {
 
 impl ProtocolHandler for VpnHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        // 1. Tehdään asynkroninen odotus yhteydelle ensin
         let (send, recv) = connection.accept_bi().await
             .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
 
-        // 2. Avataan olemassa oleva TAP-kortti vasta odotuksen jälkeen
-        let dev = {
-            let mut config = Configuration::default();
-            config.name(&self.device_name);
-            // Määritetään Layer 2 (TAP), jotta palvelinkin osaa tarttua oikeaan korttiin
-            config.layer(tun::Layer::L2);
-
-            tun::create_as_async(&config)
-        }
-        .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+        // Avataan olemassa oleva TAP-laite palvelimella
+        let dev = Tun::builder()
+            .name(&self.device_name)
+            .tap()
+            .packet_info()
+            .build()
+            .map_err(|e| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, format!("TAP avaaminen epäonnistui: {}", e))))?
+            .pop()
+            .ok_or_else(|| AcceptError::from_err(io::Error::new(io::ErrorKind::Other, "Ei saatu laiteosoitinta")))?;
         
+        let dev = Arc::new(dev);
         println!("Uusi VPN-yhteys hyväksytty!");
         
-        // 3. Aloitetaan siltaus
         if let Err(e) = vpn::bridge(dev, send, recv).await {
             eprintln!("Yhteysvirhe: {:?}", e);
         }

@@ -5,16 +5,14 @@ use anyhow::{Result, Context};
 use iroh::{Endpoint, PublicKey};
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
-use tun::Configuration;
 use std::env;
+use std::sync::Arc;
+use tokio_tun::Tun;
 use crate::server::VpnHandler;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut config = Configuration::default();
-    config.name("FC-TAP");
-    // Pakotetaan Layer 2 (TAP) -tila olemassa olevan TAP-kortin käyttämiseksi
-    config.layer(tun::Layer::L2);
+    let device_name = "FC-TAP";
 
     let secret_key = iroh::SecretKey::generate();
     let endpoint = Endpoint::builder(presets::N0)
@@ -23,8 +21,7 @@ async fn main() -> Result<()> {
         .await?;
 
     let router = Router::builder(endpoint)
-        // Tallennetaan nimi "FC-TAP" palvelinta varten
-        .accept(b"fakevpn/v1", VpnHandler { device_name: "FC-TAP".to_string() })
+        .accept(b"fakevpn/v1", VpnHandler { device_name: device_name.to_string() })
         .spawn();
 
     println!("Oma Node ID: {}", secret_key.public());
@@ -33,14 +30,23 @@ async fn main() -> Result<()> {
     if let Some(target_id_str) = args.get(1) {
         let target_id: PublicKey = target_id_str.parse().context("Virheellinen Node ID")?;
         
-        // Avataan olemassa oleva FC-TAP-kortti
-        let dev = tun::create_as_async(&config)?;
+        // Avataan olemassa oleva TAP-laite
+        let dev = Tun::builder()
+            .name(device_name)
+            .tap() // Määritetään L2 TAP-tilaan
+            .packet_info() // Tarvitaan Windowsilla/Linuxilla yhteensopivuuteen
+            .build()
+            .context("TAP-laitteen FC-TAP avaaminen epäonnistui!")?
+            .pop()
+            .context("Laitteen haku epäonnistui")?;
+
+        let dev = Arc::new(dev);
+
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await?;
         let (send, recv) = conn.open_bi().await?;
         vpn::bridge(dev, send, recv).await?;
     } else {
         println!("Palvelintila: Odotetaan yhteyksiä...");
-        // Router on käynnissä taustalla, pidetään pääohjelma käynnissä
         loop { 
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await; 
         }
