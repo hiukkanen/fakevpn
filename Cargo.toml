@@ -11,4 +11,4 @@ anyhow = "1.0"
 
 # Käytetään Windows-rajapintoja TAP-laitteen avaamiseen
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Registry"] }
+windows-sys = { version = "0.52", features = ["Win32_System_Registry"] }
