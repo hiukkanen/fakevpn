@@ -1,11 +1,8 @@
 #![cfg(target_os = "windows")]
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::FromRawHandle;
-use tokio::fs::File;
 use anyhow::{anyhow, Result};
-use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ,
 };
@@ -15,14 +12,14 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
     unsafe {
         let network_cards_path = b"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\0";
         let mut hkey: isize = 0;
-        
+
         if RegOpenKeyExA(HKEY_LOCAL_MACHINE, network_cards_path.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
             return Err(anyhow!("Ei voitu avata Windowsin verkkosovittimien rekisteriä."));
         }
 
         let mut index = 0;
         let mut subkey_name = [0u8; 256];
-        
+
         // Luetaan rekisteriä ja etsitään sovitinta, jonka nimi vastaa hakua
         loop {
             let mut name_len = subkey_name.len() as u32;
@@ -75,16 +72,9 @@ pub fn open_tap_device(device_name: &str) -> Result<File> {
     let guid = find_tap_guid(device_name)?;
     let device_path = format!("\\\\.\\Global\\{}.tap", guid);
 
-    // Avataan laite Windowsin asynkronisella (OVERLAPPED) tilalla
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .read(true)
         .write(true)
-        .custom_flags(FILE_FLAG_OVERLAPPED)
-        .open(&device_path)?;
-
-    // Muunnetaan standardi synkroninen kahva Tokion asynkroniseksi tiedostoksi
-    let raw_handle = std::os::windows::io::IntoRawHandle::into_raw_handle(file);
-    let tokio_file = unsafe { File::from_raw_handle(raw_handle) };
-
-    Ok(tokio_file)
+        .open(&device_path)
+        .map_err(Into::into)
 }
