@@ -1,63 +1,128 @@
-mod vpn;
+mod keys;
 mod server;
-
+mod tap;
+mod vpn;
 #[cfg(target_os = "windows")]
 mod windows_tap;
-#[cfg(not(target_os = "windows"))]
-mod tap_stub;
 
-use anyhow::{Result, Context};
-use iroh::{Endpoint, PublicKey};
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+use clap::Parser;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
-use std::env;
+use iroh::{Endpoint, PublicKey};
 use crate::server::VpnHandler;
 
-#[cfg(target_os = "windows")]
-use crate::windows_tap;
-#[cfg(not(target_os = "windows"))]
-use crate::tap_stub;
+/// Far Cry 4 -coop VPN: Layer-2 TAP-tunneli Irohin P2P-yhteyden yli.
+#[derive(Parser, Debug)]
+struct Cli {
+    /// TAP-laitteen nimi (oletus FC-TAP).
+    #[clap(long, default_value = "FC-TAP")]
+    device_name: String,
+
+    /// Etäsolmun Node ID, johon yhdistetään. Jos annetaan, ohjelma on asiakas;
+    /// ilman tätä ohjelma kuuntelee isäntänä.
+    #[clap(long)]
+    connect: Option<PublicKey>,
+
+    /// TAP-laitteelle asetettava IP-osoite. Oletus 10.0.0.1 (isäntä) / 10.0.0.2 (asiakas).
+    #[clap(long)]
+    tap_ip: Option<String>,
+
+    /// TAP-laitteen MTU. Oletus 1400 (pienstää QUIC-kapseloinnin ylikuormaa varten).
+    #[clap(long, default_value_t = 1400)]
+    tap_mtu: u16,
+
+    /// Omien avainten tiedostopolku (oletus %APPDATA%/fakevpn/key).
+    #[clap(long)]
+    key_file: Option<PathBuf>,
+}
+
+impl Cli {
+    fn tap_ip(&self) -> String {
+        self.tap_ip
+            .clone()
+            .or_else(|| {
+                if self.connect.is_some() {
+                    Some("10.0.0.2".to_string())
+                } else {
+                    Some("10.0.0.1".to_string())
+                }
+            })
+            .unwrap()
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let device_name = "FC-TAP";
+    let cli = Cli::parse();
 
-    let secret_key = iroh::SecretKey::generate();
+    if let Some(path) = &cli.key_file {
+        std::env::set_var("FAKEVPN_KEY_FILE", path);
+    }
+    let secret_key = keys::load_or_generate()?;
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key.clone())
         .bind()
         .await?;
 
-    let router = Router::builder(endpoint)
-        .accept(b"fakevpn/v1", VpnHandler { device_name: device_name.to_string() })
+    let handler = VpnHandler {
+        device_name: cli.device_name.clone(),
+        tap_ip: cli.tap_ip(),
+        tap_mtu: cli.tap_mtu,
+    };
+
+    let router = Router::builder(endpoint.clone())
+        .accept(b"fakevpn/v1", handler)
         .spawn();
 
     println!("Oma Node ID: {}", secret_key.public());
+    println!("Jaa tämä Node ID vastapuolelle.");
 
-    let args: Vec<String> = env::args().collect();
-    if let Some(target_id_str) = args.get(1) {
-        let target_id: PublicKey = target_id_str.parse().context("Virheellinen Node ID")?;
+    let tap_ip = cli.tap_ip();
+    let tap_mtu = cli.tap_mtu;
+    let device_name = cli.device_name.clone();
 
-        println!("Odotetaan verkkoyhteyttä...");
-        router.endpoint().online().await;
-
-        println!("Avataan olemassa oleva Windows TAP-laite: {}...", device_name);
-        let dev = windows_tap::open_tap_device(device_name)
-            .context("TAP-laitteen avaaminen epäonnistui. Aja ohjelma Administrator-oikeuksilla ja varmista, että FC-TAP on luotu.")?;
+    if let Some(target_id) = cli.connect {
+        // Asiakastila: yhdistetään isäntään.
+        println!("Asiakastila: yhdistetään solmuun {}...", target_id);
+        let dev = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
+            .context("TAP-laitteen määritys epäonnistui. Aja ohjelma Administrator-oikeuksilla ja varmista, että FC-TAP on luotu.")?;
 
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await?;
-        let (mut send, recv) = conn.open_bi().await?;
-        vpn::open_stream(&mut send).await?;
+        let (send, recv) = conn.open_bi().await?;
 
-        vpn::bridge(dev, send, recv).await?;
-    } else {
-        println!("Palvelintila: Odotetaan yhteyksiä...");
-        router.endpoint().online().await;
-        println!("Valmis vastaanottamaan yhteyksiä.");
-
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        let (tap_read, tap_write) = tokio::io::split(dev);
+        tokio::select! {
+            res = vpn::bridge(tap_read, tap_write, send, recv) => {
+                if let Err(e) = res {
+                    eprintln!("Yhteysvirhe: {:?}", e);
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nSuljetaan...");
+                conn.close(0u32.into(), b"shutdown");
+            }
         }
+    } else {
+        // Isäntätila: kuunnellaan yhteyksiä.
+        println!("Isäntätila: Odotetaan yhteyksiä... (Ctrl+C lopettaa)");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nSuljetaan...");
+            }
+            _ = host_sleep_forever() => {}
+        }
+        let _ = router.shutdown().await;
     }
+
     Ok(())
+}
+
+/// Päättymätön sleep, jotta isäntätila pysyy hengissä. Ctrl+C hoitaa lopetuksen.
+async fn host_sleep_forever() {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+    }
 }

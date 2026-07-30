@@ -3,9 +3,29 @@ name: Build Release
 on:
   push:
     branches: [ main ]
+  pull_request:
   workflow_dispatch:
 
 jobs:
+  test:
+    # The unit test (framing regression over a loopback Iroh pair) only needs
+    # Linux — the shippable binary is Windows-only, but the crate now compiles
+    # on Linux too thanks to the tap facade.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: ubuntu-test
+
+      - name: Test
+        run: cargo test
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -32,5 +52,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
+          # fakevpn on Far Cry 4 -coopia varten Windows-ohjelma; Linux-julkaisu
+          # varmistaa vain että koodi kääntyy, mutta ladataan ylös molemmat.
           name: fakevpn-${{ matrix.os }}
           path: target/release/fakevpn*

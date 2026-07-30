@@ -1,50 +1,102 @@
 # fakevpn
 
-Peer-to-peer VPN prototype that bridges Ethernet frames between two Windows machines over [Iroh](https://iroh.computer/).
+A minimal peer-to-peer **Layer-2 VPN** that lets two Windows PCs in different
+locations (behind normal consumer NAT) appear to be on the same LAN — built
+specifically so two friends can play **Far Cry 4 co-op** over the internet.
 
-## Prerequisites
+It uses [Iroh](https://iroh.computer/) for end-to-end-encrypted,
+NAT-traversing peer-to-peer connections (QUIC over UDP with hole punching and a
+relay fallback), and bridges a **TAP** virtual adapter to an Iroh stream. TAP
+(Layer-2) is chosen deliberately: it carries full Ethernet frames *including
+broadcasts*, which is what LAN-game discovery needs — the same model as
+Hamachi/ZeroTier. (It does **not** use Wintun, which is Layer-3 and would not
+carry the L2 broadcasts.)
 
-- Windows with Administrator privileges
-- A TAP-Windows adapter named **`FC-TAP`** (e.g. from the OpenVPN TAP driver)
-- Both machines must be able to reach Iroh relay servers (N0 preset)
+## Requirements (each Windows PC, once)
 
-## TAP setup (required, manual)
-
-IP configuration on the TAP interface is **not** handled by fakevpn. You must configure it by hand on **both** machines before traffic will flow.
-
-Example on two hosts in the same private subnet:
-
-| Machine | TAP adapter | IP address   | Subnet mask   |
-|---------|-------------|--------------|---------------|
-| 1       | FC-TAP      | `10.0.0.1`   | `255.255.255.0` |
-| 2       | FC-TAP      | `10.0.0.2`   | `255.255.255.0` |
-
-Use `ncpa.cpl` (Network Connections) or PowerShell, for example:
-
-```powershell
-netsh interface ip set address name="FC-TAP" static 10.0.0.1 255.255.255.0
-```
-
-Adjust addresses as needed; the important part is that both sides are on the same subnet and each has a distinct IP on `FC-TAP`.
+- The **OpenVPN tap-windows6** driver installed, with a TAP adapter named
+  **`FC-TAP`** already created. fakevpn opens and configures this adapter; it
+  does not create it. (Install it with OpenVPN's `tapinstall.exe` / the OpenVPN
+  installer's "TAP Virtual Adapter".)
+- Run fakevpn **as Administrator** (it sets the adapter's IP, MTU and media
+  status).
 
 ## Usage
 
-**Machine 1 — listener**
+Build for Windows:
 
-```text
-fakevpn
+```sh
+cargo build --release --target x86_64-pc-windows-msvc
 ```
 
-Note the printed Node ID.
+**Host (player A — the one who hosts the co-op game):**
 
-**Machine 2 — connect to machine 1**
-
-```text
-fakevpn <machine-1-node-id>
+```sh
+fakevpn.exe
 ```
 
-Run both as Administrator so the TAP device can be opened.
+Prints its **Node ID**, configures `FC-TAP` to `10.0.0.1/24` (MTU 1400), and waits
+for the friend to connect. Share the Node ID with the friend.
+
+**Client (player B — the one who joins):**
+
+```sh
+fakevpn.exe --connect <A_NODE_ID>
+```
+
+Configures `FC-TAP` to `10.0.0.2/24`, connects to the host over Iroh
+(hole-punches or falls back to a relay as needed). Both PCs are now on the same
+virtual `10.0.0.0/24` LAN.
+
+### Playing Far Cry 4
+
+1. Host: launch Far Cry 4 and start a co-op game / host.
+2. Client: launch Far Cry 4 — the host should appear via LAN discovery (its
+   broadcasts traverse the TAP tunnel) — join.
+
+Verify the tunnel first with `ping 10.0.0.1` from the client (and back). If LAN
+discovery is flaky, the inner MTU may be too high for the path; lower it with
+`--tap-mtu 1380`.
+
+## TAP setup
+
+The `FC-TAP` adapter must exist (tap-windows6 driver). fakevpn opens it, sets it
+"media connected", and assigns the IP/subnet mask and MTU automatically via
+`netsh` (run as Administrator). No manual `netsh` is needed for the IP — only
+the driver install + a `FC-TAP` adapter named accordingly.
+
+| Role   | TAP adapter | IP address | Subnet mask   |
+|--------|-------------|------------|---------------|
+| Host   | FC-TAP      | `10.0.0.1` | `255.255.255.0` |
+| Client | FC-TAP      | `10.0.0.2` | `255.255.255.0` |
+
+## CLI options
+
+```
+--device-name <NAME>    TAP adapter name (default: FC-TAP)
+--connect <NODE_ID>     Remote Iroh Node ID to connect to (omitted = host/listen)
+--tap-ip <IP>           Static IP for the TAP adapter (default: 10.0.0.1 host / 10.0.0.2 client)
+--tap-mtu <N>           TAP MTU (default: 1400)
+--key-file <PATH>       Path to store/load the persistent Iroh secret key
+                        (default: %APPDATA%/fakevpn/key, or $FAKEVPN_KEY_FILE)
+```
+
+A persistent secret key is stored after the first run, so the **Node ID stays the
+same** across restarts — share it once and reuse it.
 
 ## How it works
 
-Each instance generates an Iroh Node ID. The listener waits for incoming connections on ALPN `fakevpn/v1`. The client dials by Node ID. Once connected, both sides open `FC-TAP` and bidirectionally bridge raw frames between the TAP device and the Iroh stream.
+- `vpn::bridge` copies Ethernet frames between the TAP adapter and a single
+  Iroh bidirectional QUIC stream. Each frame is **length-prefixed** (4-byte
+  big-endian) so the receiver reassembles whole frames — the previous raw
+  stream was broken because `RecvStream::read_chunk` returns chunks not aligned
+  to frame boundaries.
+- `windows_tap` opens the `FC-TAP` device, sets it "media connected" via the
+  `TAP_WIN_IOCTL_SET_MEDIA_STATUS` ioctl, and assigns the IP/MTU with `netsh`.
+- Iroh handles discovery (Pkarr DNS), encryption (TLS 1.3), and NAT traversal
+  (hole punching + relay fallback). No custom NAT/crypto code.
+
+## Status
+
+Early / experimental. Supports exactly **two** peers (host + one client) — enough
+for 2-player co-op. No multi-peer mesh, routing, or internet egress over the TAP.

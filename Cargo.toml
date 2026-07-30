@@ -5,10 +5,11 @@ edition = "2021"
 
 [dependencies]
 iroh = "1.0"
-iroh-base = "1.0" 
+iroh-base = "1.0"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
 
-# Käytetään Windows-rajapintoja TAP-laitteen avaamiseen
+# Käytetään Windows-rajapintoja TAP-laitteen avaamiseen ja määrittämiseen
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Registry"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Registry"] }
