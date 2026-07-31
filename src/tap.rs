@@ -12,7 +12,7 @@ use tokio::fs::File;
 /// `tap_ip/24` and set its MTU to `tap_mtu`.
 #[cfg(target_os = "windows")]
 pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<File> {
-    let dev = windows_tap::open_and_configure(device_name, tap_ip, tap_mtu)?;
+    let dev = crate::windows_tap::open_and_configure(device_name, tap_ip, tap_mtu)?;
     Ok(dev)
 }
 

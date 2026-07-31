@@ -146,7 +146,8 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
 
     // Asetetaan media status "connected" ennen kuin luovutamme kahvan tokioille.
     let raw_handle = file.into_raw_handle();
-    set_media_connected(raw_handle)?;
+    let handle: HANDLE = raw_handle as isize;
+    set_media_connected(handle)?;
 
     // Määritetään IP ja MTU netshillä.
     configure_tap(device_name, tap_ip, tap_mtu)?;
