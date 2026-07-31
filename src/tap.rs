@@ -19,6 +19,6 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
 #[cfg(not(target_os = "windows"))]
 pub fn open_and_configure(_device_name: &str, _tap_ip: &str, _tap_mtu: u16) -> Result<File> {
     Err(anyhow!(
-        "TAP-laitteet tuettu vain Windowsilla. Aja ohjelma Windows-koneella."
+        "TAP devices are only supported on Windows. Run the program on a Windows machine."
     ))
 }

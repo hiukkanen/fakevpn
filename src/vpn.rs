@@ -36,7 +36,7 @@ where
         loop {
             let n = tap_read.read(&mut buf).await?;
             if n == 0 {
-                break; // Laite suljettu
+                break; // Device closed
             }
             send.write_all(&(n as u32).to_be_bytes()).await?;
             send.write_all(&buf[..n]).await?;

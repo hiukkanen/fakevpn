@@ -17,15 +17,15 @@ impl ProtocolHandler for VpnHandler {
         let (send, recv) = connection.accept_bi().await
             .map_err(|e| AcceptError::from_err(io::Error::other(e.to_string())))?;
 
-        // Avataan ja määritellään TAP-laite palvelimella
+        // Open and configure the TAP device on the server
         let dev = crate::tap::open_and_configure(&self.device_name, &self.tap_ip, self.tap_mtu)
-            .map_err(|e| AcceptError::from_err(io::Error::other(format!("TAP-laitteen määritys epäonnistui: {}", e))))?;
+            .map_err(|e| AcceptError::from_err(io::Error::other(format!("TAP device configuration failed: {}", e))))?;
 
-        println!("Uusi VPN-yhteys hyväksytty!");
+        println!("New VPN connection accepted!");
 
         let (tap_read, tap_write) = tokio::io::split(dev);
         if let Err(e) = vpn::bridge(tap_read, tap_write, send, recv).await {
-            eprintln!("Yhteysvirhe: {:?}", e);
+            eprintln!("Connection error: {:?}", e);
         }
         Ok(())
     }

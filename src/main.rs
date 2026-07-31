@@ -14,27 +14,27 @@ use iroh::protocol::Router;
 use iroh::{Endpoint, PublicKey};
 use crate::server::VpnHandler;
 
-/// Far Cry 4 -coop VPN: Layer-2 TAP-tunneli Irohin P2P-yhteyden yli.
+/// Far Cry 4 coop VPN: Layer-2 TAP tunnel over Iroh P2P connection.
 #[derive(Parser, Debug)]
 struct Cli {
-    /// TAP-laitteen nimi (oletus FC-TAP).
+    /// TAP device name (default FC-TAP).
     #[clap(long, default_value = "FC-TAP")]
     device_name: String,
 
-    /// Etäsolmun Node ID, johon yhdistetään. Jos annetaan, ohjelma on asiakas;
-    /// ilman tätä ohjelma kuuntelee isäntänä.
+    /// Remote node ID to connect to. If provided, the program is a client;
+    /// without it, the program listens as a host.
     #[clap(long)]
     connect: Option<PublicKey>,
 
-    /// TAP-laitteelle asetettava IP-osoite. Oletus 10.0.0.1 (isäntä) / 10.0.0.2 (asiakas).
+    /// IP address to assign to the TAP device. Default 10.0.0.1 (host) / 10.0.0.2 (client).
     #[clap(long)]
     tap_ip: Option<String>,
 
-    /// TAP-laitteen MTU. Oletus 1400 (pienstää QUIC-kapseloinnin ylikuormaa varten).
+    /// TAP device MTU. Default 1400 (to reduce QUIC encapsulation overhead).
     #[clap(long, default_value_t = 1400)]
     tap_mtu: u16,
 
-    /// Omien avainten tiedostopolku (oletus %APPDATA%/fakevpn/key).
+    /// Path to the key file (default %APPDATA%/fakevpn/key).
     #[clap(long)]
     key_file: Option<PathBuf>,
 }
@@ -77,18 +77,18 @@ async fn main() -> Result<()> {
         .accept(b"fakevpn/v1", handler)
         .spawn();
 
-    println!("Oma Node ID: {}", secret_key.public());
-    println!("Jaa tämä Node ID vastapuolelle.");
+    println!("My Node ID: {}", secret_key.public());
+    println!("Share this Node ID with the other party.");
 
     let tap_ip = cli.tap_ip();
     let tap_mtu = cli.tap_mtu;
     let device_name = cli.device_name.clone();
 
     if let Some(target_id) = cli.connect {
-        // Asiakastila: yhdistetään isäntään.
-        println!("Asiakastila: yhdistetään solmuun {}...", target_id);
+        // Client mode: connecting to host.
+        println!("Client mode: connecting to node {}...", target_id);
         let dev = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
-            .context("TAP-laitteen määritys epäonnistui. Aja ohjelma Administrator-oikeuksilla ja varmista, että FC-TAP on luotu.")?;
+            .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
 
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await?;
         let (send, recv) = conn.open_bi().await?;
@@ -97,20 +97,20 @@ async fn main() -> Result<()> {
         tokio::select! {
             res = vpn::bridge(tap_read, tap_write, send, recv) => {
                 if let Err(e) = res {
-                    eprintln!("Yhteysvirhe: {:?}", e);
+                    eprintln!("Connection error: {:?}", e);
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                println!("\nSuljetaan...");
+                println!("\nClosing...");
                 conn.close(0u32.into(), b"shutdown");
             }
         }
     } else {
-        // Isäntätila: kuunnellaan yhteyksiä.
-        println!("Isäntätila: Odotetaan yhteyksiä... (Ctrl+C lopettaa)");
+        // Host mode: listening for connections.
+        println!("Host mode: waiting for connections... (Ctrl+C to exit)");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                println!("\nSuljetaan...");
+                println!("\nClosing...");
             }
             _ = host_sleep_forever() => {}
         }
@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Päättymätön sleep, jotta isäntätila pysyy hengissä. Ctrl+C hoitaa lopetuksen.
+/// Infinite sleep to keep the host mode alive. Ctrl+C handles shutdown.
 async fn host_sleep_forever() {
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;

@@ -18,20 +18,20 @@ use windows_sys::Win32::System::Registry::{
 // connects the adapter (otherwise it appears "cable unplugged" to the OS).
 const TAP_WIN_IOCTL_SET_MEDIA_STATUS: u32 = 0x80000418;
 
-// Etsitään TAP-laitteen GUID Windowsin rekisteristä sen nimen (esim. "FC-TAP") perusteella
+// Find the TAP device GUID from the Windows registry based on its name (e.g., "FC-TAP")
 fn find_tap_guid(device_name: &str) -> Result<String> {
     unsafe {
         let network_cards_path = b"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\0";
         let mut hkey: isize = 0;
 
         if RegOpenKeyExA(HKEY_LOCAL_MACHINE, network_cards_path.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
-            return Err(anyhow!("Ei voitu avata Windowsin verkkosovittimien rekisteriä."));
+            return Err(anyhow!("Could not open Windows network adapters registry."));
         }
 
         let mut index = 0;
         let mut subkey_name = [0u8; 256];
 
-        // Luetaan rekisteriä ja etsitään sovitinta, jonka nimi vastaa hakua
+        // Read registry and find the adapter whose name matches the search
         loop {
             let mut name_len = subkey_name.len() as u32;
             let res = windows_sys::Win32::System::Registry::RegEnumKeyExA(
@@ -46,7 +46,7 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
             );
 
             if res != 0 {
-                break; // Loppu saavutettu tai virhe
+                break; // End reached or error
             }
 
             let guid_str = std::str::from_utf8(&subkey_name[..name_len as usize]).unwrap_or("");
@@ -75,12 +75,12 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
         }
 
         RegCloseKey(hkey);
-        Err(anyhow!("TAP-laitetta nimeltä '{}' ei löytynyt Windowsista.", device_name))
+        Err(anyhow!("TAP device with name '{}' not found in Windows.", device_name))
     }
 }
 
-/// Asettaa TAP-sovittimen "kytketyksi" (media status connected). Ilman tätä
-/// sovitin näkyy järjestelmälle "kaapeli irti" -tilassa.
+/// Sets the TAP adapter to "connected" (media status connected). Without this,
+/// the adapter appears to the system as "cable unplugged".
 fn set_media_connected(handle: HANDLE) -> Result<()> {
     let mut in_buf: [u8; 4] = 1u32.to_ne_bytes();
     let mut bytes_returned: u32 = 0;
@@ -97,13 +97,13 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
         )
     };
     if ok == 0 {
-        return Err(anyhow!("TAP-sovittimen media-tilan asettaminen epäonnistui."));
+        return Err(anyhow!("Failed to set TAP adapter media status."));
     }
     Ok(())
 }
 
-/// Määrittää TAP-sovittimelle kiinteän IP-osoitteen (255.255.255.0) ja MTU:n
-/// käyttämällä netsh-komentoa. Vaatii Admin-oikeudet.
+/// Configures the TAP adapter with a static IP address (255.255.255.0) and MTU
+/// using the netsh command. Requires Administrator privileges.
 fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
     let status = Command::new("netsh")
         .args([
@@ -114,7 +114,7 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
         .status()?;
     if !status.success() {
         return Err(anyhow!(
-            "TAP-laitteen IP-osoitteen asettaminen epäonnistui. Aja ohjelma Administrator-oikeuksilla."
+            "Failed to set TAP device IP address. Run the program as Administrator."
         ));
     }
 
@@ -127,13 +127,13 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
         ])
         .status()?;
     if !status.success() {
-        return Err(anyhow!("TAP-laitteen MTU:n asettaminen epäonnistui."));
+        return Err(anyhow!("Failed to set TAP device MTU."));
     }
     Ok(())
 }
 
-/// Avaa TAP-laitteen nimen perusteella, asettaa sen "kytketyksi", määrittää
-/// IP-osoitteen ja MTU:n, ja palauttaa asynkronisen tiedostokahvan.
+/// Opens the TAP device by name, sets it to "connected", configures the IP
+/// address and MTU, and returns an async file handle.
 pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<File> {
     let guid = find_tap_guid(device_name)?;
     let device_path = format!("\\\\.\\Global\\{}.tap", guid);
@@ -144,15 +144,15 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
         .custom_flags(FILE_FLAG_OVERLAPPED)
         .open(&device_path)?;
 
-    // Asetetaan media status "connected" ennen kuin luovutamme kahvan tokioille.
+    // Set media status to "connected" before handing the handle to tokio.
     let raw_handle = file.into_raw_handle();
     let handle: HANDLE = raw_handle as isize;
     set_media_connected(handle)?;
 
-    // Määritetään IP ja MTU netshillä.
+    // Configure IP and MTU using netsh.
     configure_tap(device_name, tap_ip, tap_mtu)?;
 
-    // Muunnetaan standardi kahva Tokion asynkroniseksi tiedostoksi.
+    // Convert the standard handle to a tokio async file.
     let tokio_file = unsafe { File::from_raw_handle(raw_handle) };
     Ok(tokio_file)
 }
