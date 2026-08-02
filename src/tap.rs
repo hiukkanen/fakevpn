@@ -5,8 +5,11 @@
 //! the stub kept here lets the crate *compile* on Linux so the framing unit
 //! tests can run in CI / the dev codespace.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use tokio::fs::File;
+
+#[cfg(not(target_os = "windows"))]
+use anyhow::anyhow;
 
 /// Open the TAP adapter named `device_name`, bring it "connected",  assign it
 /// `tap_ip/24` and set its MTU to `tap_mtu`.
