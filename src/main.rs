@@ -6,12 +6,14 @@ mod vpn;
 mod windows_tap;
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh::{Endpoint, PublicKey};
+use iroh_base::KeyParsingError;
 use crate::server::VpnHandler;
 
 /// Far Cry 4 coop VPN: Layer-2 TAP tunnel over Iroh P2P connection.
@@ -23,8 +25,9 @@ struct Cli {
 
     /// Remote node ID to connect to. If provided, the program is a client;
     /// without it, the program listens as a host.
+    /// Accepts a 64-character hex string or a base32-encoded node ID.
     #[clap(long)]
-    connect: Option<PublicKey>,
+    connect: Option<String>,
 
     /// IP address to assign to the TAP device. Default 10.0.0.1 (host) / 10.0.0.2 (client).
     #[clap(long)]
@@ -51,6 +54,16 @@ impl Cli {
                 }
             })
             .unwrap()
+    }
+
+    fn parse_connect(&self) -> Result<Option<PublicKey>, KeyParsingError> {
+        match &self.connect {
+            Some(s) => {
+                let key = PublicKey::from_str(s)?;
+                Ok(Some(key))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -84,7 +97,14 @@ async fn main() -> Result<()> {
     let tap_mtu = cli.tap_mtu;
     let device_name = cli.device_name.clone();
 
-    if let Some(target_id) = cli.connect {
+    let target_id = cli.parse_connect().map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid node ID: {}. Expected a 64-character hex string or a base32-encoded node ID.",
+            e
+        )
+    })?;
+
+    if let Some(target_id) = target_id {
         // Client mode: connecting to host.
         println!("Client mode: connecting to node {}...", target_id);
         let dev = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)

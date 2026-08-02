@@ -75,6 +75,7 @@ the driver install + a `FC-TAP` adapter named accordingly.
 ```
 --device-name <NAME>    TAP adapter name (default: FC-TAP)
 --connect <NODE_ID>     Remote Iroh Node ID to connect to (omitted = host/listen)
+                        Accepts a 64-character hex string or a base32-encoded node ID.
 --tap-ip <IP>           Static IP for the TAP adapter (default: 10.0.0.1 host / 10.0.0.2 client)
 --tap-mtu <N>           TAP MTU (default: 1400)
 --key-file <PATH>       Path to store/load the persistent Iroh secret key
