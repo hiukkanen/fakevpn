@@ -18,7 +18,9 @@ const MAX_FRAME: usize = 2048;
 /// device corrupted. The length prefix makes the stream self-delimiting.
 ///
 /// `RecvStream::read_exact` is **not cancel-safe**, so the receive direction
-/// runs as its own loop rather than as a `tokio::select!` branch.
+/// runs as its own loop. The two directions are combined with an outer
+/// `tokio::select!` which drops whichever branch loses; this is fine because
+/// the bridge is tearing down anyway.
 pub async fn bridge<R, W>(
     mut tap_read: R,
     mut tap_write: W,
@@ -44,8 +46,9 @@ where
         Ok::<(), anyhow::Error>(())
     };
 
-    // Direction 2: tunnel -> TAP. read_exact is not cancel-safe: keep it in its
-    // own loop, never dropped mid-await by a `select!` sibling branch.
+    // Direction 2: tunnel -> TAP. read_exact is not cancel-safe, so it runs in
+    // its own loop. The outer select! will drop the losing branch when the bridge
+    // tears down, which is acceptable since the whole connection is ending anyway.
     let to_tap = async {
         let mut len_buf = [0u8; 4];
         let mut frame = [0u8; MAX_FRAME];
@@ -65,10 +68,9 @@ where
     // Run both directions concurrently. Either side finishing (device closed or
     // peer disconnected) ends the bridge.
     tokio::select! {
-        res = to_tunnel => { let _ = res; }
-        res = to_tap => { let _ = res; }
+        res = to_tunnel => res,
+        res = to_tap => res,
     }
-    Ok(())
 }
 
 #[cfg(test)]

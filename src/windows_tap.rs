@@ -62,7 +62,11 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
                 let name_key = b"Name\0";
 
                 if RegQueryValueExA(subkey, name_key.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), data.as_mut_ptr(), &mut data_len) == 0 {
-                    let name = std::str::from_utf8(&data[..data_len as usize - 1]).unwrap_or("").trim_matches('\0');
+                    let name = if data_len > 0 {
+                        std::str::from_utf8(&data[..data_len.saturating_sub(1)]).unwrap_or("").trim_matches('\0')
+                    } else {
+                        ""
+                    };
                     if name == device_name {
                         RegCloseKey(subkey);
                         RegCloseKey(hkey);
@@ -147,10 +151,15 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     // Set media status to "connected" before handing the handle to tokio.
     let raw_handle = file.into_raw_handle();
     let handle: HANDLE = raw_handle as isize;
-    set_media_connected(handle)?;
-
-    // Configure IP and MTU using netsh.
+    
+    // Configure IP and MTU first, as it doesn't require the raw handle
     configure_tap(device_name, tap_ip, tap_mtu)?;
+    
+    // Now set media status - if this fails, we need to close the handle
+    if let Err(e) = set_media_connected(handle) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
+        return Err(e);
+    }
 
     // Convert the standard handle to a tokio async file.
     let tokio_file = unsafe { File::from_raw_handle(raw_handle) };

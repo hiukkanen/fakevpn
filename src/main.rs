@@ -71,10 +71,7 @@ impl Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(path) = &cli.key_file {
-        std::env::set_var("FAKEVPN_KEY_FILE", path);
-    }
-    let secret_key = keys::load_or_generate()?;
+    let secret_key = keys::load_or_generate(cli.key_file.as_deref())?;
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key.clone())
         .bind()
