@@ -6,12 +6,13 @@ use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::process::Command;
 use anyhow::{anyhow, Result};
 use tokio::fs::File;
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING};
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
-use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ,
 };
+use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
 // TAP-Windows6 "set media status connected" ioctl. Driver-defined, METHOD_BUFFERED,
 // FILE_ANY_ACCESS, function 4. Value is 0x80000418. Setting the in-buffer to 1
@@ -85,9 +86,22 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
 
 /// Sets the TAP adapter to "connected" (media status connected). Without this,
 /// the adapter appears to the system as "cable unplugged".
+/// 
+/// Note: The handle must have been opened with FILE_FLAG_OVERLAPPED, so we must
+/// provide a valid OVERLAPPED structure and wait for completion.
 fn set_media_connected(handle: HANDLE) -> Result<()> {
     let mut in_buf: [u8; 4] = 1u32.to_ne_bytes();
     let mut bytes_returned: u32 = 0;
+
+    // Create an event for the overlapped operation
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event == 0 {
+        return Err(anyhow!("Failed to create event for overlapped IO (GetLastError={}).", unsafe { GetLastError() }));
+    }
+
+    let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+    overlapped.hEvent = event;
+
     let ok = unsafe {
         DeviceIoControl(
             handle,
@@ -97,13 +111,34 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
             std::ptr::null_mut(),
             0,
             &mut bytes_returned,
-            std::ptr::null_mut(),
+            &mut overlapped,
         )
     };
-    if ok == 0 {
-        return Err(anyhow!("Failed to set TAP adapter media status."));
+
+    // Handle the result - DeviceIoControl may return 0 with ERROR_IO_PENDING for async completion
+    if ok != 0 {
+        // Synchronous completion
+        unsafe { CloseHandle(event) };
+        Ok(())
+    } else {
+        let err = unsafe { GetLastError() };
+        if err == ERROR_IO_PENDING {
+            // Asynchronous completion - wait for the operation to finish
+            unsafe { WaitForSingleObject(event, INFINITE) };
+            let mut transferred = 0u32;
+            let got = unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 0) };
+            unsafe { CloseHandle(event) };
+            if got != 0 {
+                Ok(())
+            } else {
+                Err(anyhow!("Overlapped DeviceIoControl failed (GetLastError={}).", unsafe { GetLastError() }))
+            }
+        } else {
+            // Immediate failure
+            unsafe { CloseHandle(event) };
+            Err(anyhow!("Failed to set TAP adapter media status (GetLastError={}).", err))
+        }
     }
-    Ok(())
 }
 
 /// Configures the TAP adapter with a static IP address (255.255.255.0) and MTU
