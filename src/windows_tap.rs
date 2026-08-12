@@ -90,12 +90,14 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
 /// Note: The handle must have been opened with FILE_FLAG_OVERLAPPED, so we must
 /// provide a valid OVERLAPPED structure and wait for completion.
 fn set_media_connected(handle: HANDLE) -> Result<()> {
+    eprintln!("[DEBUG] Attempting to set TAP media status...");
     let mut in_buf: [u8; 4] = 1u32.to_ne_bytes();
     let mut bytes_returned: u32 = 0;
 
     // Create an event for the overlapped operation
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event == 0 {
+        eprintln!("[DEBUG] Failed to create event, error code: {}", unsafe { GetLastError() });
         return Err(anyhow!("Failed to create event for overlapped IO (GetLastError={}).", unsafe { GetLastError() }));
     }
 
@@ -118,32 +120,52 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
     // Handle the result - DeviceIoControl may return 0 with ERROR_IO_PENDING for async completion
     if ok != 0 {
         // Synchronous completion
+        eprintln!("[DEBUG] Media status set successfully (synchronous)");
         unsafe { CloseHandle(event) };
         Ok(())
     } else {
         let err = unsafe { GetLastError() };
+        eprintln!("[DEBUG] DeviceIoControl returned error: {} ({})", err, format_error(err));
         if err == ERROR_IO_PENDING {
             // Asynchronous completion - wait for the operation to finish
+            eprintln!("[DEBUG] Waiting for async IO...");
             unsafe { WaitForSingleObject(event, INFINITE) };
             let mut transferred = 0u32;
             let got = unsafe { GetOverlappedResult(handle, &overlapped, &mut transferred, 0) };
             unsafe { CloseHandle(event) };
             if got != 0 {
+                eprintln!("[DEBUG] Async IO completed successfully");
                 Ok(())
             } else {
-                Err(anyhow!("Overlapped DeviceIoControl failed (GetLastError={}).", unsafe { GetLastError() }))
+                let async_err = unsafe { GetLastError() };
+                eprintln!("[DEBUG] Async IO failed with error: {}", async_err);
+                Err(anyhow!("Overlapped DeviceIoControl failed (GetLastError={}).", async_err))
             }
         } else if err == ERROR_INVALID_FUNCTION {
-            // Some TAP drivers/dozens of system configurations do not support
-            // overlapped DeviceIoControl for this IOCTL. Try a synchronous call
-            // (no OVERLAPPED) as a fallback.
+            // IOCTL not supported. Try netsh enable as a workaround, then attempt synchronous IOCTL.
+            eprintln!("[DEBUG] IOCTL not supported by driver, trying netsh workaround...");
             unsafe { CloseHandle(event) };
-            // Try to enable the interface via netsh as a best-effort workaround
-            // for drivers that don't support this IOCTL. This sometimes helps on
-            // systems where the adapter is administratively disabled.
-            let _ = Command::new("netsh")
-                .args(["interface", "set", "interface", &format!("name=\\\"{}\\\"", "FC-TAP"), "admin=ENABLED"])
-                .status();
+            
+            // Try to enable the interface via netsh
+            eprintln!("[DEBUG] Running: netsh interface set interface name=FC-TAP admin=ENABLED");
+            let netsh_result = Command::new("netsh")
+                .args(["interface", "set", "interface", "name=FC-TAP", "admin=ENABLED"])
+                .output();
+            
+            match netsh_result {
+                Ok(output) => {
+                    eprintln!("[DEBUG] netsh stdout: {}", String::from_utf8_lossy(&output.stdout));
+                    if !output.stderr.is_empty() {
+                        eprintln!("[DEBUG] netsh stderr: {}", String::from_utf8_lossy(&output.stderr));
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[DEBUG] netsh command failed: {}", e);
+                }
+            }
+            
+            // Try synchronous IOCTL as fallback
+            eprintln!("[DEBUG] Attempting synchronous DeviceIoControl...");
             let mut bytes_returned: u32 = 0;
             let ok_sync = unsafe {
                 DeviceIoControl(
@@ -158,16 +180,20 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
                 )
             };
             if ok_sync != 0 {
+                eprintln!("[DEBUG] Synchronous DeviceIoControl succeeded");
                 Ok(())
             } else {
                 let code = unsafe { GetLastError() };
                 let msg = format_error(code);
+                eprintln!("[WARNING] Synchronous DeviceIoControl also failed: {} ({})", code, msg);
                 Err(anyhow!("Synchronous DeviceIoControl fallback failed (GetLastError={}): {}", code, msg))
             }
         } else {
             // Immediate failure
             unsafe { CloseHandle(event) };
-            Err(anyhow!("Failed to set TAP adapter media status (GetLastError={}).", err))
+            let msg = format_error(err);
+            eprintln!("[ERROR] Failed to set TAP adapter media status: {} ({})", err, msg);
+            Err(anyhow!("Failed to set TAP adapter media status (GetLastError={}): {}.", err, msg))
         }
     }
 }
@@ -220,6 +246,7 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
 pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<File> {
     let guid = find_tap_guid(device_name)?;
     let device_path = format!("\\\\.\\Global\\{}.tap", guid);
+    eprintln!("[DEBUG] Opening TAP device at: {}", device_path);
 
     let file = OpenOptions::new()
         .read(true)
@@ -227,20 +254,25 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
         .custom_flags(FILE_FLAG_OVERLAPPED)
         .open(&device_path)?;
 
+    eprintln!("[DEBUG] TAP device opened successfully");
+
     // Set media status to "connected" before handing the handle to tokio.
     let raw_handle = file.into_raw_handle();
     let handle: HANDLE = raw_handle as isize;
     
     // Configure IP and MTU first, as it doesn't require the raw handle
+    eprintln!("[DEBUG] Configuring TAP adapter IP and MTU...");
     configure_tap(device_name, tap_ip, tap_mtu)?;
+    eprintln!("[DEBUG] TAP adapter configured");
     
-    // Now set media status - if this fails, we need to close the handle
+    // Now set media status - log warnings if it fails, but continue anyway.
+    // Some TAP drivers don't support this IOCTL, but the adapter may still work.
     if let Err(e) = set_media_connected(handle) {
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) };
-        return Err(e);
+        eprintln!("[WARNING] Failed to set media status: {}. Continuing anyway; adapter may still work.", e);
     }
 
     // Convert the standard handle to a tokio async file.
     let tokio_file = unsafe { File::from_raw_handle(raw_handle) };
+    eprintln!("[DEBUG] Returning async TAP file handle");
     Ok(tokio_file)
 }
