@@ -7,6 +7,8 @@ use std::process::Command;
 use anyhow::{anyhow, Result};
 use tokio::fs::File;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION};
+use windows_sys::Win32::System::Diagnostics::Debug::{FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS};
+use windows_sys::Win32::System::Memory::LocalFree;
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
@@ -138,6 +140,12 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
             // overlapped DeviceIoControl for this IOCTL. Try a synchronous call
             // (no OVERLAPPED) as a fallback.
             unsafe { CloseHandle(event) };
+            // Try to enable the interface via netsh as a best-effort workaround
+            // for drivers that don't support this IOCTL. This sometimes helps on
+            // systems where the adapter is administratively disabled.
+            let _ = Command::new("netsh")
+                .args(["interface", "set", "interface", &format!("name=\\\"{}\\\"", "FC-TAP"), "admin=ENABLED"])
+                .status();
             let mut bytes_returned: u32 = 0;
             let ok_sync = unsafe {
                 DeviceIoControl(
@@ -154,13 +162,40 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
             if ok_sync != 0 {
                 Ok(())
             } else {
-                Err(anyhow!("Synchronous DeviceIoControl fallback failed (GetLastError={}).", unsafe { GetLastError() }))
+                let code = unsafe { GetLastError() };
+                let msg = format_error(code);
+                Err(anyhow!("Synchronous DeviceIoControl fallback failed (GetLastError={}): {}", code, msg))
             }
         } else {
             // Immediate failure
             unsafe { CloseHandle(event) };
             Err(anyhow!("Failed to set TAP adapter media status (GetLastError={}).", err))
         }
+    }
+}
+
+// Format a Windows error code into a human-friendly message string.
+fn format_error(code: u32) -> String {
+    unsafe {
+        let mut buf: *mut u16 = std::ptr::null_mut();
+        let flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+        let len = FormatMessageW(
+            flags,
+            std::ptr::null(),
+            code,
+            0,
+            (&mut buf) as *mut *mut u16 as *mut u16,
+            0,
+            std::ptr::null_mut(),
+        );
+        if len == 0 || buf.is_null() {
+            return format!("Unknown error {}", code);
+        }
+        // Convert wide string to Rust String
+        let slice = std::slice::from_raw_parts(buf, len as usize);
+        let s = String::from_utf16_lossy(slice).trim().to_string();
+        LocalFree(buf as isize);
+        s
     }
 }
 
