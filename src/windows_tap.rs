@@ -6,7 +6,7 @@ use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::process::Command;
 use anyhow::{anyhow, Result};
 use tokio::fs::File;
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING};
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION};
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
@@ -132,6 +132,29 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
                 Ok(())
             } else {
                 Err(anyhow!("Overlapped DeviceIoControl failed (GetLastError={}).", unsafe { GetLastError() }))
+            }
+        } else if err == ERROR_INVALID_FUNCTION {
+            // Some TAP drivers/dozens of system configurations do not support
+            // overlapped DeviceIoControl for this IOCTL. Try a synchronous call
+            // (no OVERLAPPED) as a fallback.
+            unsafe { CloseHandle(event) };
+            let mut bytes_returned: u32 = 0;
+            let ok_sync = unsafe {
+                DeviceIoControl(
+                    handle,
+                    TAP_WIN_IOCTL_SET_MEDIA_STATUS,
+                    in_buf.as_mut_ptr() as *mut _,
+                    in_buf.len() as u32,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut bytes_returned,
+                    std::ptr::null_mut(),
+                )
+            };
+            if ok_sync != 0 {
+                Ok(())
+            } else {
+                Err(anyhow!("Synchronous DeviceIoControl fallback failed (GetLastError={}).", unsafe { GetLastError() }))
             }
         } else {
             // Immediate failure
