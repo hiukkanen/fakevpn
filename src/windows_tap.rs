@@ -7,8 +7,6 @@ use std::process::Command;
 use anyhow::{anyhow, Result};
 use tokio::fs::File;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION};
-use windows_sys::Win32::System::Diagnostics::Debug::{FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS};
-use windows_sys::Win32::System::Memory::LocalFree;
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
@@ -174,28 +172,16 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
     }
 }
 
-// Format a Windows error code into a human-friendly message string.
-fn format_error(code: u32) -> String {
-    unsafe {
-        let mut buf: *mut u16 = std::ptr::null_mut();
-        let flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-        let len = FormatMessageW(
-            flags,
-            std::ptr::null(),
-            code,
-            0,
-            (&mut buf) as *mut *mut u16 as *mut u16,
-            0,
-            std::ptr::null_mut(),
-        );
-        if len == 0 || buf.is_null() {
-            return format!("Unknown error {}", code);
-        }
-        // Convert wide string to Rust String
-        let slice = std::slice::from_raw_parts(buf, len as usize);
-        let s = String::from_utf16_lossy(slice).trim().to_string();
-        LocalFree(buf as isize);
-        s
+// Provide a descriptive string for common Windows error codes.
+fn format_error(code: u32) -> &'static str {
+    match code {
+        1 => "Invalid function (IOCTL not supported by driver)",
+        2 => "File not found",
+        5 => "Access denied (administrator privileges may be required)",
+        6 => "Invalid handle",
+        32 => "The process cannot access the file because it is being used by another process",
+        87 => "The parameter is incorrect",
+        _ => "Unknown Windows error",
     }
 }
 
