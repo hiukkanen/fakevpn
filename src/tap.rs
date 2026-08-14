@@ -127,9 +127,13 @@ impl AsyncWrite for TapSync {
 
         let state = self.write_state.as_mut().expect("write state initialized");
         match Pin::new(&mut state.recv).poll(cx) {
-            Poll::Ready(Ok(n)) => {
+            Poll::Ready(Ok(Ok(n))) => {
                 self.write_state = None;
                 Poll::Ready(Ok(n))
+            }
+            Poll::Ready(Ok(Err(e))) => {
+                self.write_state = None;
+                Poll::Ready(Err(e))
             }
             Poll::Ready(Err(_)) => {
                 self.write_state = None;
