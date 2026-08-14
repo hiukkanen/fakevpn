@@ -14,13 +14,13 @@ use anyhow::anyhow;
 /// Open the TAP adapter named `device_name`, bring it "connected",  assign it
 /// `tap_ip/24` and set its MTU to `tap_mtu`.
 #[cfg(target_os = "windows")]
-pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<File> {
-    let dev = crate::windows_tap::open_and_configure(device_name, tap_ip, tap_mtu)?;
-    Ok(dev)
+pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<(File, File)> {
+    let (read, write) = crate::windows_tap::open_and_configure(device_name, tap_ip, tap_mtu)?;
+    Ok((read, write))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn open_and_configure(_device_name: &str, _tap_ip: &str, _tap_mtu: u16) -> Result<File> {
+pub fn open_and_configure(_device_name: &str, _tap_ip: &str, _tap_mtu: u16) -> Result<(File, File)> {
     Err(anyhow!(
         "TAP devices are only supported on Windows. Run the program on a Windows machine."
     ))

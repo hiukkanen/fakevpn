@@ -289,8 +289,13 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
 }
 
 /// Opens the TAP device by name, sets it to "connected", configures the IP
-/// address and MTU, and returns an async file handle.
-pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<File> {
+/// address and MTU, and returns separate async read/write handles.
+///
+/// On Windows, splitting a single TAP handle into read/write halves can trigger
+/// `ERROR_INVALID_PARAMETER` (`os error 87`) because the driver does not like a
+/// cloned/duplicated device handle being used for both directions. Opening two
+/// independent handles avoids that issue while preserving the same bridge flow.
+pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<(File, File)> {
     let guid = find_tap_guid(device_name)?;
     let device_path = format!("\\\\.\\Global\\{}.tap", guid);
     eprintln!("[DEBUG] Opening TAP device at: {}", device_path);
@@ -320,8 +325,19 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     configure_tap(device_name, tap_ip, tap_mtu)?;
     eprintln!("[DEBUG] TAP adapter configured");
 
-    // Convert the standard handle to a tokio async file.
-    let tokio_file = unsafe { File::from_raw_handle(handle_guard.into_raw()) };
-    eprintln!("[DEBUG] Returning async TAP file handle");
-    Ok(tokio_file)
+    let read_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .open(&device_path)?;
+    let write_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .open(&device_path)?;
+
+    let read_tokio = unsafe { File::from_raw_handle(read_file.into_raw_handle()) };
+    let write_tokio = unsafe { File::from_raw_handle(write_file.into_raw_handle()) };
+    eprintln!("[DEBUG] Returning separate async TAP read/write handles");
+    Ok((read_tokio, write_tokio))
 }
