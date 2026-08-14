@@ -82,6 +82,7 @@ async fn main() -> Result<()> {
         device_name: cli.device_name.clone(),
         tap_ip: cli.tap_ip(),
         tap_mtu: cli.tap_mtu,
+        session_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let router = Router::builder(endpoint.clone())
@@ -109,18 +110,28 @@ async fn main() -> Result<()> {
         println!("Client mode: connecting to node {}...", target_id);
         println!("Client Iroh endpoint ID: {}", endpoint.id());
         println!("Client Iroh endpoint addr: {:?}", endpoint.addr());
+
+        println!("Dialing remote Iroh node {} over ALPN fakevpn/v1...", target_id);
+        let conn = tokio::select! {
+            conn = router.endpoint().connect(target_id, b"fakevpn/v1") => {
+                conn.map_err(|e| {
+                    anyhow::anyhow!(
+                        "Connection failed: the host may be offline or the Node ID is wrong. Make sure the server is running and you used the correct Node ID. Original error: {}",
+                        e
+                    )
+                })?
+            }
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nCancelled during dial.");
+                return Ok(());
+            }
+        };
+        println!("Iroh connection established to {}.", target_id);
+
         let tap_sync = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
             .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
         let (tap_read, tap_write) = tokio::io::split(tap_sync);
 
-        println!("Dialing remote Iroh node {} over ALPN fakevpn/v1...", target_id);
-        let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await.map_err(|e| {
-            anyhow::anyhow!(
-                "Connection failed: the host may be offline or the Node ID is wrong. Make sure the server is running and you used the correct Node ID. Original error: {}",
-                e
-            )
-        })?;
-        println!("Iroh connection established to {}.", target_id);
         let (send, recv) = conn.open_bi().await.map_err(|e| {
             anyhow::anyhow!(
                 "Connection established, but the VPN stream could not be opened. The host may be offline or the protocol version may not match. Original error: {}",
@@ -146,17 +157,10 @@ async fn main() -> Result<()> {
             _ = tokio::signal::ctrl_c() => {
                 println!("\nClosing...");
             }
-            _ = host_sleep_forever() => {}
+            _ = std::future::pending::<()>() => {}
         }
         let _ = router.shutdown().await;
     }
 
     Ok(())
-}
-
-/// Infinite sleep to keep the host mode alive. Ctrl+C handles shutdown.
-async fn host_sleep_forever() {
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
-    }
 }

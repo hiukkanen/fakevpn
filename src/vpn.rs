@@ -56,13 +56,11 @@ where
             recv.read_exact(&mut len_buf).await?;
             let len = u32::from_be_bytes(len_buf) as usize;
             if len == 0 || len > MAX_FRAME {
-                // Protocol error or garbage: stop rather than allocate a huge buffer.
-                break;
+                anyhow::bail!("invalid frame length: {len}");
             }
             recv.read_exact(&mut frame[..len]).await?;
             tap_write.write_all(&frame[..len]).await?;
         }
-        Ok::<(), anyhow::Error>(())
     };
 
     // Run both directions concurrently. Either side finishing (device closed or
@@ -148,18 +146,20 @@ mod tests {
             game_write.write_all(f).await?;
         }
 
-        // Simulated game: read the reassembled bytes back out of the server TAP.
-        let total: usize = frames.iter().map(|f| f.len()).sum();
-        let mut got = vec![0u8; total];
+        // Simulated game: read each frame back out of the server TAP and assert
+        // the boundaries were preserved. This catches the original bug where
+        // read/write coalescing would still produce the same total byte stream but
+        // lose individual frame boundaries.
         let mut game_read = server_game;
-        match tokio::time::timeout(Duration::from_secs(10), game_read.read_exact(&mut got)).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(anyhow::anyhow!("read from server TAP failed: {}", e)),
-            Err(_) => return Err(anyhow::anyhow!("timeout waiting for all {} bytes", total)),
+        for frame in &frames {
+            let mut got = vec![0u8; frame.len()];
+            match tokio::time::timeout(Duration::from_secs(10), game_read.read_exact(&mut got)).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(anyhow::anyhow!("read from server TAP failed: {}", e)),
+                Err(_) => return Err(anyhow::anyhow!("timeout waiting for frame of length {}", frame.len())),
+            }
+            assert_eq!(got, *frame, "tunnel altered frame boundaries while reassembling the stream");
         }
-
-        let expected: Vec<u8> = frames.concat();
-        assert_eq!(got, expected, "tunnel did not reassemble frames byte-identically");
 
         // Let the bridges wind down without panicking.
         drop(game_write);

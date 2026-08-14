@@ -24,6 +24,7 @@ pub fn load_or_generate(override_path: Option<&Path>) -> Result<SecretKey> {
     } else {
         default_key_path()?
     };
+
     if path.exists() {
         let bytes = fs::read(&path).with_context(|| {
             format!("Failed to read key file: {}", path.display())
@@ -33,21 +34,42 @@ pub fn load_or_generate(override_path: Option<&Path>) -> Result<SecretKey> {
             arr.copy_from_slice(&bytes);
             return Ok(SecretKey::from_bytes(&arr));
         }
-        // Wrong file size: create a new key.
+        return Err(anyhow::anyhow!(
+            "key file exists at '{}' but is not a valid 32-byte private key; refusing to overwrite it",
+            path.display()
+        ));
     }
+
     let key = SecretKey::generate();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(&path, key.to_bytes()).with_context(|| {
-        format!("Failed to write key file: {}", path.display())
-    })?;
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        use std::fs::OpenOptions;
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .with_context(|| format!("Failed to create key file: {}", path.display()))?;
+        let bytes = key.to_bytes();
+        file.write_all(&bytes)
+            .with_context(|| format!("Failed to write key file: {}", path.display()))?;
+        file.sync_all()?;
+        return Ok(key);
     }
-    Ok(key)
+
+    #[cfg(not(unix))]
+    {
+        fs::write(&path, key.to_bytes()).with_context(|| {
+            format!("Failed to write key file: {}", path.display())
+        })?;
+        return Ok(key);
+    }
 }
+

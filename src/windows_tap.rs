@@ -145,11 +145,11 @@ impl Write for TapSync {
 
 impl Drop for TapSync {
     fn drop(&mut self) {
-        if self.handle != 0 {
+        if !self.handle.is_null() {
             unsafe {
                 CloseHandle(self.handle);
             }
-            self.handle = 0;
+            self.handle = 0 as HANDLE;
         }
     }
 }
