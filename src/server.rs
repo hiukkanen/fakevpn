@@ -18,16 +18,13 @@ impl ProtocolHandler for VpnHandler {
             .map_err(|e| AcceptError::from_err(io::Error::other(e.to_string())))?;
 
         // Open and configure the TAP device on the server.
-        // Keep a single underlying Windows handle and serialize read/write access;
-        // duplicated TAP handles are rejected by the driver with ERROR_INVALID_PARAMETER (87).
-        let tap = std::sync::Arc::new(tokio::sync::Mutex::new(
-            crate::tap::open_and_configure(&self.device_name, &self.tap_ip, self.tap_mtu)
-                .map_err(|e| AcceptError::from_err(io::Error::other(format!("TAP device configuration failed: {}", e))))?
-        ));
+        let tap = crate::tap::open_and_configure(&self.device_name, &self.tap_ip, self.tap_mtu)
+            .map_err(|e| AcceptError::from_err(io::Error::other(format!("TAP device configuration failed: {}", e))))?;
+        let (tap_read, tap_write) = tokio::io::split(tap);
 
         println!("New VPN connection accepted!");
 
-        if let Err(e) = vpn::bridge_tap_file(tap, send, recv).await {
+        if let Err(e) = vpn::bridge(tap_read, tap_write, send, recv).await {
             eprintln!("Connection error: {:?}", e);
         }
         Ok(())

@@ -829,6 +829,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "tokio",
+ "tokio-util",
  "windows-sys 0.52.0",
 ]
 

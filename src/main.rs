@@ -108,10 +108,9 @@ async fn main() -> Result<()> {
         println!("Client mode: connecting to node {}...", target_id);
         println!("Client Iroh endpoint ID: {}", endpoint.id());
         println!("Client Iroh endpoint addr: {:?}", endpoint.addr());
-        let tap = std::sync::Arc::new(tokio::sync::Mutex::new(
-            tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
-                .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?
-        ));
+        let tap = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
+            .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
+        let (tap_read, tap_write) = tokio::io::split(tap);
 
         println!("Dialing remote Iroh node {} over ALPN fakevpn/v1...", target_id);
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await.map_err(|e| {
@@ -129,7 +128,7 @@ async fn main() -> Result<()> {
         })?;
 
         tokio::select! {
-            res = vpn::bridge_tap_file(tap, send, recv) => {
+            res = vpn::bridge(tap_read, tap_write, send, recv) => {
                 if let Err(e) = res {
                     eprintln!("Connection error: {:?}", e);
                 }

@@ -1,8 +1,6 @@
 use anyhow::Result;
 use iroh::endpoint::{RecvStream, SendStream};
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::Mutex;
 
 /// Largest single Layer-2 frame we will carry over the tunnel.
 ///
@@ -69,51 +67,6 @@ where
 
     // Run both directions concurrently. Either side finishing (device closed or
     // peer disconnected) ends the bridge.
-    tokio::select! {
-        res = to_tunnel => res,
-        res = to_tap => res,
-    }
-}
-
-/// Version of the bridge for a single Windows TAP file handle. The driver is
-/// strict about the handle lifecycle, so both directions must serialize through
-/// the same underlying file instead of using `tokio::io::split`.
-pub async fn bridge_tap_file(
-    tap: Arc<Mutex<tokio::fs::File>>,
-    mut send: SendStream,
-    mut recv: RecvStream,
-) -> Result<()> {
-    let to_tunnel = async {
-        let mut buf = [0u8; MAX_FRAME];
-        loop {
-            let mut tap_guard = tap.lock().await;
-            let n = tokio::io::AsyncReadExt::read(&mut *tap_guard, &mut buf).await?;
-            if n == 0 {
-                break;
-            }
-            drop(tap_guard);
-            send.write_all(&(n as u32).to_be_bytes()).await?;
-            send.write_all(&buf[..n]).await?;
-        }
-        Ok::<(), anyhow::Error>(())
-    };
-
-    let to_tap = async {
-        let mut len_buf = [0u8; 4];
-        let mut frame = [0u8; MAX_FRAME];
-        loop {
-            recv.read_exact(&mut len_buf).await?;
-            let len = u32::from_be_bytes(len_buf) as usize;
-            if len == 0 || len > MAX_FRAME {
-                break;
-            }
-            recv.read_exact(&mut frame[..len]).await?;
-            let mut tap_guard = tap.lock().await;
-            tokio::io::AsyncWriteExt::write_all(&mut *tap_guard, &frame[..len]).await?;
-        }
-        Ok::<(), anyhow::Error>(())
-    };
-
     tokio::select! {
         res = to_tunnel => res,
         res = to_tap => res,

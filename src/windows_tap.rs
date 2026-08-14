@@ -1,18 +1,194 @@
 #![cfg(target_os = "windows")]
 
 use std::fs::OpenOptions;
+use std::io::{self, Read, Write};
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
+use std::os::windows::io::{IntoRawHandle, RawHandle};
+use std::pin::Pin;
 use std::process::Command;
+use std::task::{Context, Poll};
 use anyhow::{anyhow, Result};
-use tokio::fs::File;
-use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION};
-use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    ReadFile, WriteFile, FILE_FLAG_OVERLAPPED,
+};
 use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+
+pub struct TapSync {
+    handle: HANDLE,
+}
+
+unsafe impl Send for TapSync {}
+unsafe impl Sync for TapSync {}
+
+impl TapSync {
+    pub fn from_raw_handle(handle: RawHandle) -> Self {
+        Self {
+            handle: handle as HANDLE,
+        }
+    }
+
+    fn io_result_from_err(code: u32) -> io::Error {
+        io::Error::from_raw_os_error(code as i32)
+    }
+
+    fn overlapped_read(&self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        overlapped.hEvent = event;
+
+        let mut bytes_read = 0u32;
+        let ok = unsafe {
+            ReadFile(
+                self.handle,
+                buf.as_mut_ptr() as *mut _,
+                buf.len() as u32,
+                &mut bytes_read,
+                &mut overlapped,
+            )
+        };
+
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_IO_PENDING {
+                unsafe { WaitForSingleObject(event, INFINITE) };
+                let mut transferred = 0u32;
+                let got = unsafe { GetOverlappedResult(self.handle, &mut overlapped, &mut transferred, 0) };
+                unsafe { CloseHandle(event) };
+                if got == 0 {
+                    return Err(Self::io_result_from_err(unsafe { GetLastError() }));
+                }
+                return Ok(transferred as usize);
+            }
+            unsafe { CloseHandle(event) };
+            return Err(Self::io_result_from_err(err));
+        }
+
+        unsafe { CloseHandle(event) };
+        Ok(bytes_read as usize)
+    }
+
+    fn overlapped_write(&self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        overlapped.hEvent = event;
+
+        let mut bytes_written = 0u32;
+        let ok = unsafe {
+            WriteFile(
+                self.handle,
+                buf.as_ptr() as *const _,
+                buf.len() as u32,
+                &mut bytes_written,
+                &mut overlapped,
+            )
+        };
+
+        if ok == 0 {
+            let err = unsafe { GetLastError() };
+            if err == ERROR_IO_PENDING {
+                unsafe { WaitForSingleObject(event, INFINITE) };
+                let mut transferred = 0u32;
+                let got = unsafe { GetOverlappedResult(self.handle, &mut overlapped, &mut transferred, 0) };
+                unsafe { CloseHandle(event) };
+                if got == 0 {
+                    return Err(Self::io_result_from_err(unsafe { GetLastError() }));
+                }
+                return Ok(transferred as usize);
+            }
+            unsafe { CloseHandle(event) };
+            return Err(Self::io_result_from_err(err));
+        }
+
+        unsafe { CloseHandle(event) };
+        Ok(bytes_written as usize)
+    }
+}
+
+impl Read for TapSync {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.overlapped_read(buf)
+    }
+}
+
+impl Write for TapSync {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.overlapped_write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl AsyncRead for TapSync {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let slice = buf.initialize_unfilled();
+        match self.overlapped_read(slice) {
+            Ok(n) => {
+                buf.advance(n);
+                Poll::Ready(Ok(()))
+            }
+            Err(e) => Poll::Ready(Err(e)),
+        }
+    }
+}
+
+impl AsyncWrite for TapSync {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(self.overlapped_write(buf))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for TapSync {
+    fn drop(&mut self) {
+        if self.handle != 0 {
+            unsafe {
+                CloseHandle(self.handle);
+            }
+            self.handle = 0;
+        }
+    }
+}
 
 const TAP_WIN_IOCTL_SET_MEDIA_STATUS: u32 = 0x00220018;
 
@@ -324,8 +500,7 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     configure_tap(device_name, tap_ip, tap_mtu)?;
     eprintln!("[DEBUG] TAP adapter configured");
 
-    // Convert the standard handle to a tokio async file.
-    let tokio_file = unsafe { File::from_raw_handle(handle_guard.into_raw()) };
-    eprintln!("[DEBUG] Returning async TAP file handle");
-    Ok(tokio_file)
+let handle = handle_guard.into_raw();
+    eprintln!("[DEBUG] Returning synchronous TAP handle");
+    Ok(TapSync::from_raw_handle(handle))
 }
