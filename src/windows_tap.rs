@@ -428,8 +428,8 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
     let status = Command::new("netsh")
         .args([
             "interface", "ipv4", "add", "route",
-            "10.0.0.0/24",
-            &netsh_name,
+            "prefix=10.0.0.0/24",
+            &format!("interface={}", device_name),
         ])
         .status()?;
     if !status.success() {
