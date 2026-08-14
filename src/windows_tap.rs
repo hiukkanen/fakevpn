@@ -433,15 +433,23 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
         ])
         .output()?;
     if !add_route.status.success() {
+        // Check whether the route already exists.
         let route_check = Command::new("netsh")
-            .args(["interface", "ipv4", "show", "route", "prefix=10.0.0.0/24"])
+            .args(["interface", "ipv4", "show", "route"])
             .output()?;
+
         let route_text = format!(
             "{}{}",
             String::from_utf8_lossy(&route_check.stdout),
             String::from_utf8_lossy(&route_check.stderr)
         );
-        if !(route_check.status.success() && route_text.contains("10.0.0.0/24")) {
+
+        // The route is considered present only if the output contains both the
+        // destination prefix and the interface name.
+        if !(route_check.status.success()
+            && route_text.contains("10.0.0.0/24")
+            && route_text.contains(device_name))
+        {
             return Err(anyhow!(
                 "Failed to create the virtual LAN route for the TAP device. Run the program as Administrator."
             ));
