@@ -61,7 +61,8 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
 
                 if RegQueryValueExA(subkey, name_key.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), data.as_mut_ptr(), &mut data_len) == 0 {
                     let name = if data_len > 0 {
-                        std::str::from_utf8(&data[..(data_len as usize).saturating_sub(1)]).unwrap_or("").trim_matches('\0')
+                        let bytes = &data[..data_len as usize];
+                        std::str::from_utf8(bytes).unwrap_or("").trim_end_matches('\0')
                     } else {
                         ""
                     };
