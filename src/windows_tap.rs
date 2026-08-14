@@ -44,7 +44,12 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
             );
 
             if res != 0 {
-                break; // End reached or error
+                if res == 259 {
+                    break; // ERROR_NO_MORE_ITEMS: end of enumeration.
+                }
+
+                eprintln!("[WARNING] RegEnumKeyExA failed for adapter index {} with error code {}.", index, res);
+                break;
             }
 
             let guid_str = std::str::from_utf8(&subkey_name[..name_len as usize]).unwrap_or("");
