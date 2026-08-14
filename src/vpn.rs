@@ -1,5 +1,9 @@
 use anyhow::Result;
 use iroh::endpoint::{RecvStream, SendStream};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// Largest single Layer-2 frame we will carry over the tunnel.
@@ -31,44 +35,60 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    let bytes_to_tunnel = Arc::new(AtomicU64::new(0));
+    let bytes_to_tap = Arc::new(AtomicU64::new(0));
+
     // Direction 1: TAP -> tunnel. TAP-Windows6 delivers one whole Ethernet frame
     // per read, so we prefix each read with its length.
-    let to_tunnel = async {
-        let mut buf = [0u8; MAX_FRAME];
-        loop {
-            let n = tap_read.read(&mut buf).await?;
-            if n == 0 {
-                break; // Device closed
+    let to_tunnel = {
+        let bytes_to_tunnel = bytes_to_tunnel.clone();
+        async move {
+            let mut buf = [0u8; MAX_FRAME];
+            loop {
+                let n = tap_read.read(&mut buf).await?;
+                if n == 0 {
+                    break; // Device closed
+                }
+                send.write_all(&(n as u32).to_be_bytes()).await?;
+                send.write_all(&buf[..n]).await?;
+                bytes_to_tunnel.fetch_add(n as u64, Ordering::Relaxed);
             }
-            send.write_all(&(n as u32).to_be_bytes()).await?;
-            send.write_all(&buf[..n]).await?;
+            Ok::<(), anyhow::Error>(())
         }
-        Ok::<(), anyhow::Error>(())
     };
 
     // Direction 2: tunnel -> TAP. read_exact is not cancel-safe, so it runs in
     // its own loop. The outer select! will drop the losing branch when the bridge
     // tears down, which is acceptable since the whole connection is ending anyway.
-    let to_tap = async {
-        let mut len_buf = [0u8; 4];
-        let mut frame = [0u8; MAX_FRAME];
-        loop {
-            recv.read_exact(&mut len_buf).await?;
-            let len = u32::from_be_bytes(len_buf) as usize;
-            if len == 0 || len > MAX_FRAME {
-                anyhow::bail!("invalid frame length: {len}");
+    let to_tap = {
+        let bytes_to_tap = bytes_to_tap.clone();
+        async move {
+            let mut len_buf = [0u8; 4];
+            let mut frame = [0u8; MAX_FRAME];
+            loop {
+                recv.read_exact(&mut len_buf).await?;
+                let len = u32::from_be_bytes(len_buf) as usize;
+                if len == 0 || len > MAX_FRAME {
+                    anyhow::bail!("invalid frame length: {len}");
+                }
+                recv.read_exact(&mut frame[..len]).await?;
+                tap_write.write_all(&frame[..len]).await?;
+                bytes_to_tap.fetch_add(len as u64, Ordering::Relaxed);
             }
-            recv.read_exact(&mut frame[..len]).await?;
-            tap_write.write_all(&frame[..len]).await?;
         }
     };
 
     // Run both directions concurrently. Either side finishing (device closed or
     // peer disconnected) ends the bridge.
-    tokio::select! {
+    let res = tokio::select! {
         res = to_tunnel => res,
         res = to_tap => res,
-    }
+    };
+
+    let sent = bytes_to_tunnel.load(Ordering::Relaxed);
+    let received = bytes_to_tap.load(Ordering::Relaxed);
+    println!("Bridge ended. Total bytes: sent {} / received {}", sent, received);
+    res
 }
 
 #[cfg(test)]
