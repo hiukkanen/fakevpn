@@ -94,8 +94,9 @@ fn set_media_connected(handle: HANDLE, device_name: &str) -> Result<()> {
     // Create an event for the overlapped operation
     let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
     if event == 0 {
-        eprintln!("[DEBUG] Failed to create event, error code: {}", unsafe { GetLastError() });
-        return Err(anyhow!("Failed to create event for overlapped IO (GetLastError={}).", unsafe { GetLastError() }));
+        let err = unsafe { GetLastError() };
+        eprintln!("[DEBUG] Failed to create event, error code: {}", err);
+        return Err(anyhow!("Failed to create event for overlapped IO (GetLastError={}).", err));
     }
 
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
