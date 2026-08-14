@@ -86,7 +86,7 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
 /// 
 /// Note: The handle must have been opened with FILE_FLAG_OVERLAPPED, so we must
 /// provide a valid OVERLAPPED structure and wait for completion.
-fn set_media_connected(handle: HANDLE) -> Result<()> {
+fn set_media_connected(handle: HANDLE, device_name: &str) -> Result<()> {
     eprintln!("[DEBUG] Attempting to set TAP media status...");
     let mut in_buf: [u8; 4] = 1u32.to_ne_bytes();
     let mut bytes_returned: u32 = 0;
@@ -143,10 +143,11 @@ fn set_media_connected(handle: HANDLE) -> Result<()> {
             eprintln!("[DEBUG] IOCTL not supported by driver, trying netsh workaround...");
             unsafe { CloseHandle(event) };
             
-            // Try to enable the interface via netsh
-            eprintln!("[DEBUG] Running: netsh interface set interface name=FC-TAP admin=ENABLED");
+            // Try to enable the interface via netsh using the actual adapter name.
+            let netsh_name = format!("name={}", device_name);
+            eprintln!("[DEBUG] Running: netsh interface set interface {} admin=ENABLED", netsh_name);
             let netsh_result = Command::new("netsh")
-                .args(["interface", "set", "interface", "name=FC-TAP", "admin=ENABLED"])
+                .args(["interface", "set", "interface", &netsh_name, "admin=ENABLED"])
                 .output();
             
             match netsh_result {
@@ -262,10 +263,11 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     configure_tap(device_name, tap_ip, tap_mtu)?;
     eprintln!("[DEBUG] TAP adapter configured");
     
-    // Now set media status - log warnings if it fails, but continue anyway.
-    // Some TAP drivers don't support this IOCTL, but the adapter may still work.
-    if let Err(e) = set_media_connected(handle) {
-        eprintln!("[WARNING] Failed to set media status: {}. Continuing anyway; adapter may still work.", e);
+    // Some TAP drivers don't support this IOCTL, but if the fallback fails we
+    // must surface the error rather than silently continuing with a misconfigured adapter.
+    if let Err(e) = set_media_connected(handle, device_name) {
+        eprintln!("[WARNING] Failed to set media status: {}.", e);
+        return Err(e);
     }
 
     // Convert the standard handle to a tokio async file.
