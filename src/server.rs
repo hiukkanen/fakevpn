@@ -16,6 +16,10 @@ pub struct VpnHandler {
 
 impl ProtocolHandler for VpnHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        let remote_id = connection.remote_id();
+        
+        println!("[STATUS] Online with {}", remote_id);
+        
         if self.session_active.swap(true, Ordering::SeqCst) {
             return Err(AcceptError::from_err(std::io::Error::new(
                 std::io::ErrorKind::AddrInUse,
@@ -35,6 +39,8 @@ impl ProtocolHandler for VpnHandler {
             if let Err(e) = vpn::bridge(tap_read, tap_write, send, recv).await {
                 eprintln!("Connection error: {:?}", e);
             }
+            
+            println!("[STATUS] Offline from {}", remote_id);
             Ok(())
         }
         .await;

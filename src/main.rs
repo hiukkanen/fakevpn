@@ -126,7 +126,9 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
         };
+        let remote_id = conn.remote_id();
         println!("Iroh connection established to {}.", target_id);
+        println!("[STATUS] Online with {}", remote_id);
 
         let tap_sync = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
             .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
@@ -144,9 +146,11 @@ async fn main() -> Result<()> {
                 if let Err(e) = res {
                     eprintln!("Connection error: {:?}", e);
                 }
+                println!("[STATUS] Offline from {}", remote_id);
             }
             _ = tokio::signal::ctrl_c() => {
                 println!("\nClosing...");
+                println!("[STATUS] Offline from {}", remote_id);
                 conn.close(0u32.into(), b"shutdown");
             }
         }
