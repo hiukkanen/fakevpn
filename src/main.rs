@@ -88,6 +88,8 @@ async fn main() -> Result<()> {
         .spawn();
 
     println!("My Node ID: {}", secret_key.public());
+    println!("Iroh endpoint ID: {}", endpoint.id());
+    println!("Iroh endpoint addr: {:?}", endpoint.addr());
     println!("Share this Node ID with the other party.");
 
     let tap_ip = cli.tap_ip();
@@ -104,11 +106,25 @@ async fn main() -> Result<()> {
     if let Some(target_id) = target_id {
         // Client mode: connecting to host.
         println!("Client mode: connecting to node {}...", target_id);
+        println!("Client Iroh endpoint ID: {}", endpoint.id());
+        println!("Client Iroh endpoint addr: {:?}", endpoint.addr());
         let dev = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
             .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
 
-        let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await?;
-        let (send, recv) = conn.open_bi().await?;
+        println!("Dialing remote Iroh node {} over ALPN fakevpn/v1...", target_id);
+        let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await.map_err(|e| {
+            anyhow::anyhow!(
+                "Connection failed: the host may be offline or the Node ID is wrong. Make sure the server is running and you used the correct Node ID. Original error: {}",
+                e
+            )
+        })?;
+        println!("Iroh connection established to {}.", target_id);
+        let (send, recv) = conn.open_bi().await.map_err(|e| {
+            anyhow::anyhow!(
+                "Connection established, but the VPN stream could not be opened. The host may be offline or the protocol version may not match. Original error: {}",
+                e
+            )
+        })?;
 
         let (tap_read, tap_write) = tokio::io::split(dev);
         tokio::select! {
