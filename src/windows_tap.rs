@@ -2,7 +2,7 @@
 
 use std::fs::OpenOptions;
 use std::os::windows::fs::OpenOptionsExt;
-use std::os::windows::io::{FromRawHandle, IntoRawHandle};
+use std::os::windows::io::{FromRawHandle, IntoRawHandle, RawHandle};
 use std::process::Command;
 use anyhow::{anyhow, Result};
 use tokio::fs::File;
@@ -15,6 +15,34 @@ use windows_sys::Win32::System::Registry::{
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
 const TAP_WIN_IOCTL_SET_MEDIA_STATUS: u32 = 0x00220018;
+
+struct RawHandleGuard(RawHandle);
+
+impl RawHandleGuard {
+    fn new(handle: RawHandle) -> Self {
+        Self(handle)
+    }
+
+    fn as_handle(&self) -> HANDLE {
+        self.0 as HANDLE
+    }
+
+    fn into_raw(self) -> RawHandle {
+        let handle = self.0;
+        std::mem::forget(self);
+        handle
+    }
+}
+
+impl Drop for RawHandleGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                CloseHandle(self.0 as HANDLE);
+            }
+        }
+    }
+}
 
 // Find the TAP device GUID from the Windows registry based on its name (e.g., "FC-TAP")
 fn find_tap_guid(device_name: &str) -> Result<String> {
@@ -278,7 +306,8 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     // Bring the interface online before assigning the IP and MTU so the adapter
     // is not configured while still reporting as unplugged.
     let raw_handle = file.into_raw_handle();
-    let handle: HANDLE = raw_handle as isize;
+    let handle_guard = RawHandleGuard::new(raw_handle);
+    let handle: HANDLE = handle_guard.as_handle();
 
     // Some TAP drivers don't support this IOCTL, but if the fallback fails we
     // must surface the error rather than silently continuing with a misconfigured adapter.
@@ -292,7 +321,7 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     eprintln!("[DEBUG] TAP adapter configured");
 
     // Convert the standard handle to a tokio async file.
-    let tokio_file = unsafe { File::from_raw_handle(raw_handle) };
+    let tokio_file = unsafe { File::from_raw_handle(handle_guard.into_raw()) };
     eprintln!("[DEBUG] Returning async TAP file handle");
     Ok(tokio_file)
 }
