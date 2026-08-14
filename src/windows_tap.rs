@@ -10,7 +10,7 @@ use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ,
+    RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ, REG_SZ,
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
@@ -57,9 +57,23 @@ fn find_tap_guid(device_name: &str) -> Result<String> {
             if RegOpenKeyExA(HKEY_LOCAL_MACHINE, connection_path.as_ptr(), 0, KEY_READ, &mut subkey) == 0 {
                 let mut data = [0u8; 256];
                 let mut data_len = data.len() as u32;
+                let mut value_type = 0u32;
                 let name_key = b"Name\0";
 
-                if RegQueryValueExA(subkey, name_key.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), data.as_mut_ptr(), &mut data_len) == 0 {
+                if RegQueryValueExA(
+                    subkey,
+                    name_key.as_ptr(),
+                    std::ptr::null_mut(),
+                    &mut value_type,
+                    data.as_mut_ptr(),
+                    &mut data_len,
+                ) == 0 {
+                    if value_type != REG_SZ {
+                        RegCloseKey(subkey);
+                        index += 1;
+                        continue;
+                    }
+
                     let name = if data_len > 0 {
                         let bytes = &data[..data_len as usize];
                         std::str::from_utf8(bytes).unwrap_or("").trim_end_matches('\0')
