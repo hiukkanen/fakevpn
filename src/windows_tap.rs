@@ -429,12 +429,12 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
 }
 
 /// Opens the TAP device by name, sets it to "connected", configures the IP
-/// address and MTU, and returns a single async file handle.
+/// address and MTU, and returns a single TAP handle wrapper.
 ///
 /// The TAP driver does not like duplicated read/write handles on Windows; the
 /// bridge must therefore keep a single underlying handle and serialize read/write
 /// access instead of calling `tokio::io::split`.
-pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<File> {
+pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<TapSync> {
     let guid = find_tap_guid(device_name)?;
     let device_path = format!("\\\\.\\Global\\{}.tap", guid);
     eprintln!("[DEBUG] Opening TAP device at: {}", device_path);
