@@ -15,6 +15,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "windows")]
 use tokio::sync::oneshot;
+#[cfg(target_os = "windows")]
+use std::future::Future;
 
 #[cfg(target_os = "windows")]
 struct ReadState {
