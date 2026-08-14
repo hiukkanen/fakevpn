@@ -275,21 +275,21 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
 
     eprintln!("[DEBUG] TAP device opened successfully");
 
-    // Set media status to "connected" before handing the handle to tokio.
+    // Bring the interface online before assigning the IP and MTU so the adapter
+    // is not configured while still reporting as unplugged.
     let raw_handle = file.into_raw_handle();
     let handle: HANDLE = raw_handle as isize;
-    
-    // Configure IP and MTU first, as it doesn't require the raw handle
-    eprintln!("[DEBUG] Configuring TAP adapter IP and MTU...");
-    configure_tap(device_name, tap_ip, tap_mtu)?;
-    eprintln!("[DEBUG] TAP adapter configured");
-    
+
     // Some TAP drivers don't support this IOCTL, but if the fallback fails we
     // must surface the error rather than silently continuing with a misconfigured adapter.
     if let Err(e) = set_media_connected(handle, device_name) {
         eprintln!("[WARNING] Failed to set media status: {}.", e);
         return Err(e);
     }
+
+    eprintln!("[DEBUG] Configuring TAP adapter IP and MTU...");
+    configure_tap(device_name, tap_ip, tap_mtu)?;
+    eprintln!("[DEBUG] TAP adapter configured");
 
     // Convert the standard handle to a tokio async file.
     let tokio_file = unsafe { File::from_raw_handle(raw_handle) };
