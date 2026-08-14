@@ -401,16 +401,40 @@ fn format_error(code: u32) -> &'static str {
 /// Configures the TAP adapter with a static IP address (255.255.255.0) and MTU
 /// using the netsh command. Requires Administrator privileges.
 fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
+    let netsh_name = format!("name={}", device_name);
+
+    let status = Command::new("netsh")
+        .args(["interface", "set", "interface", &netsh_name, "admin=ENABLED"])
+        .status()?;
+    if !status.success() {
+        return Err(anyhow!(
+            "Failed to enable TAP device. Run the program as Administrator."
+        ));
+    }
+
     let status = Command::new("netsh")
         .args([
             "interface", "ipv4", "set", "address",
-            &format!("name={}", device_name),
+            &netsh_name,
             "static", tap_ip, "255.255.255.0",
         ])
         .status()?;
     if !status.success() {
         return Err(anyhow!(
             "Failed to set TAP device IP address. Run the program as Administrator."
+        ));
+    }
+
+    let status = Command::new("netsh")
+        .args([
+            "interface", "ipv4", "add", "route",
+            "10.0.0.0/24",
+            &netsh_name,
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(anyhow!(
+            "Failed to create the virtual LAN route for the TAP device. Run the program as Administrator."
         ));
     }
 
