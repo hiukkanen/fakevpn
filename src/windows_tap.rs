@@ -425,17 +425,27 @@ fn configure_tap(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Result<()> {
         ));
     }
 
-    let status = Command::new("netsh")
+    let add_route = Command::new("netsh")
         .args([
             "interface", "ipv4", "add", "route",
             "prefix=10.0.0.0/24",
             &format!("interface={}", device_name),
         ])
-        .status()?;
-    if !status.success() {
-        return Err(anyhow!(
-            "Failed to create the virtual LAN route for the TAP device. Run the program as Administrator."
-        ));
+        .output()?;
+    if !add_route.status.success() {
+        let route_check = Command::new("netsh")
+            .args(["interface", "ipv4", "show", "route", "prefix=10.0.0.0/24"])
+            .output()?;
+        let route_text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&route_check.stdout),
+            String::from_utf8_lossy(&route_check.stderr)
+        );
+        if !(route_check.status.success() && route_text.contains("10.0.0.0/24")) {
+            return Err(anyhow!(
+                "Failed to create the virtual LAN route for the TAP device. Run the program as Administrator."
+            ));
+        }
     }
 
     let status = Command::new("netsh")
