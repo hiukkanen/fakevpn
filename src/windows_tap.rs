@@ -14,10 +14,7 @@ use windows_sys::Win32::System::Registry::{
 };
 use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
-// TAP-Windows6 "set media status connected" ioctl. Driver-defined, METHOD_BUFFERED,
-// FILE_ANY_ACCESS, function 4. Value is 0x80000418. Setting the in-buffer to 1
-// connects the adapter (otherwise it appears "cable unplugged" to the OS).
-const TAP_WIN_IOCTL_SET_MEDIA_STATUS: u32 = 0x80000418;
+const TAP_WIN_IOCTL_SET_MEDIA_STATUS: u32 = 0x00220018;
 
 // Find the TAP device GUID from the Windows registry based on its name (e.g., "FC-TAP")
 fn find_tap_guid(device_name: &str) -> Result<String> {
