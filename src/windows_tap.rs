@@ -1,11 +1,13 @@
 #![cfg(target_os = "windows")]
 
 use std::fs::OpenOptions;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::process::Command;
 use anyhow::{anyhow, Result};
 use tokio::fs::File;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION};
+use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExA, RegQueryValueExA, HKEY_LOCAL_MACHINE, KEY_READ,
@@ -249,6 +251,7 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
     let file = OpenOptions::new()
         .read(true)
         .write(true)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
         .open(&device_path)?;
 
     eprintln!("[DEBUG] TAP device opened successfully");
@@ -268,9 +271,7 @@ pub fn open_and_configure(device_name: &str, tap_ip: &str, tap_mtu: u16) -> Resu
         eprintln!("[WARNING] Failed to set media status: {}. Continuing anyway; adapter may still work.", e);
     }
 
-    // Convert the standard handle to a tokio async file. This avoids the
-    // overlapped-handle mismatch that can trigger ERROR_INVALID_PARAMETER (87)
-    // on some TAP drivers when the device is opened with overlapped semantics.
+    // Convert the standard handle to a tokio async file.
     let tokio_file = unsafe { File::from_raw_handle(raw_handle) };
     eprintln!("[DEBUG] Returning async TAP file handle");
     Ok(tokio_file)
