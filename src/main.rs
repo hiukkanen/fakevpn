@@ -73,6 +73,7 @@ async fn main() -> Result<()> {
 
     let secret_key = keys::load_or_generate(cli.key_file.as_deref())?;
     let endpoint = Endpoint::builder(presets::N0)
+        .alpns(vec![b"fakevpn/v1".to_vec()])
         .secret_key(secret_key.clone())
         .bind()
         .await?;
@@ -108,9 +109,10 @@ async fn main() -> Result<()> {
         println!("Client mode: connecting to node {}...", target_id);
         println!("Client Iroh endpoint ID: {}", endpoint.id());
         println!("Client Iroh endpoint addr: {:?}", endpoint.addr());
-        let tap = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
+        let tap_sync = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
             .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
-        let (tap_read, tap_write) = tokio::io::split(tap);
+        let tap_async = tokio_util::io::SyncIoBridge::new(tap_sync);
+        let (tap_read, tap_write) = tokio::io::split(tap_async);
 
         println!("Dialing remote Iroh node {} over ALPN fakevpn/v1...", target_id);
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await.map_err(|e| {

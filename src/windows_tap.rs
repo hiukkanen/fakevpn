@@ -4,11 +4,8 @@ use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{IntoRawHandle, RawHandle};
-use std::pin::Pin;
 use std::process::Command;
-use std::task::{Context, Poll};
 use anyhow::{anyhow, Result};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, HANDLE, ERROR_IO_PENDING, ERROR_INVALID_FUNCTION,
 };
@@ -144,40 +141,7 @@ impl Write for TapSync {
     }
 }
 
-impl AsyncRead for TapSync {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        let slice = buf.initialize_unfilled();
-        match self.overlapped_read(slice) {
-            Ok(n) => {
-                buf.advance(n);
-                Poll::Ready(Ok(()))
-            }
-            Err(e) => Poll::Ready(Err(e)),
-        }
-    }
-}
 
-impl AsyncWrite for TapSync {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(self.overlapped_write(buf))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-}
 
 impl Drop for TapSync {
     fn drop(&mut self) {

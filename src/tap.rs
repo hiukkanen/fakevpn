@@ -7,9 +7,6 @@
 
 use anyhow::Result;
 use std::io::{self, Read, Write};
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[cfg(target_os = "windows")]
 pub use crate::windows_tap::TapSync;
@@ -38,42 +35,6 @@ impl Write for TapSync {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-impl AsyncRead for TapSync {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        _buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        Poll::Ready(Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "TAP devices are only supported on Windows.",
-        )))
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-impl AsyncWrite for TapSync {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        _buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Poll::Ready(Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "TAP devices are only supported on Windows.",
-        )))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
     }
 }
 
