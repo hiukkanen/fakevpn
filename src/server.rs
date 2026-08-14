@@ -20,8 +20,7 @@ impl ProtocolHandler for VpnHandler {
         // Open and configure the TAP device on the server.
         let tap_sync = crate::tap::open_and_configure(&self.device_name, &self.tap_ip, self.tap_mtu)
             .map_err(|e| AcceptError::from_err(io::Error::other(format!("TAP device configuration failed: {}", e))))?;
-        let tap_async = tokio_util::io::SyncIoBridge::new(tap_sync);
-        let (tap_read, tap_write) = tokio::io::split(tap_async);
+        let (tap_read, tap_write) = tokio::io::split(tap_sync);
 
         println!("New VPN connection accepted!");
 

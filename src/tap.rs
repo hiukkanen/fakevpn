@@ -7,6 +7,9 @@
 
 use anyhow::Result;
 use std::io::{self, Read, Write};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 #[cfg(target_os = "windows")]
 pub use crate::windows_tap::TapSync;
@@ -35,6 +38,48 @@ impl Write for TapSync {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl AsyncRead for TapSync {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+
+        let mut scratch = vec![0u8; buf.remaining()];
+        let n = match Read::read(&mut *self, &mut scratch[..]) {
+            Ok(n) => n,
+            Err(e) => return Poll::Ready(Err(e)),
+        };
+
+        if n > 0 {
+            buf.put_slice(&scratch[..n]);
+        }
+
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for TapSync {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Poll::Ready(Write::write(&mut *self, buf))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Write::flush(&mut *self))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
     }
 }
 

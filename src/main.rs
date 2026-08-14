@@ -111,8 +111,7 @@ async fn main() -> Result<()> {
         println!("Client Iroh endpoint addr: {:?}", endpoint.addr());
         let tap_sync = tap::open_and_configure(&device_name, &tap_ip, tap_mtu)
             .context("TAP device configuration failed. Run as Administrator and ensure FC-TAP is created.")?;
-        let tap_async = tokio_util::io::SyncIoBridge::new(tap_sync);
-        let (tap_read, tap_write) = tokio::io::split(tap_async);
+        let (tap_read, tap_write) = tokio::io::split(tap_sync);
 
         println!("Dialing remote Iroh node {} over ALPN fakevpn/v1...", target_id);
         let conn = router.endpoint().connect(target_id, b"fakevpn/v1").await.map_err(|e| {
